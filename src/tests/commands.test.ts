@@ -45,7 +45,7 @@ function serializeForSnapshot(value: unknown): unknown {
       }
 
       if (key === 'LastUpdatedOn') {
-        return [key, new Date(0,0,0)] as const;        
+        return [key, new Date(Date.UTC(0, 0, 0, 0, 0, 0))] as const;        
       }
 
       return [key, serializeForSnapshot(itemValue)] as const;
