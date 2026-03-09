@@ -1,0 +1,9 @@
+let sourceMapping = dynamic(
+  {
+    "Emergency Manager" : "Public",
+    "Utility Company" : "Private"
+  });
+StormEvents
+| where Source == "Emergency Manager" or Source == "Utility Company"
+| project EventId, Source, FriendlyName = sourceMapping[Source]
+| take 20

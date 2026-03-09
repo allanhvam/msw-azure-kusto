@@ -1,0 +1,9 @@
+// case() transformation
+datatable(EventType:string, DamageProperty:long)
+[
+  "Flood", 1500000,
+  "Hail", 700000,
+  "Thunderstorm", 100000
+]
+| extend DamageCategory = case(DamageProperty > 1000000, "High", DamageProperty > 500000, "Medium", "Low")
+| order by DamageProperty desc

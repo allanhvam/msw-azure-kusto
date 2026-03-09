@@ -1,0 +1,11 @@
+// summarize + multiple aggregates
+datatable(State:string, EventType:string, DamageProperty:long)
+[
+  "California", "Flood", 1500000,
+  "California", "Flood", 500000,
+  "Texas", "Hail", 200000,
+  "Texas", "Hail", 300000,
+  "Florida", "Flood", 900000
+]
+| summarize TotalDamage = sum(DamageProperty), EventCount = count() by EventType, State
+| order by State asc, EventType asc

@@ -1,0 +1,2 @@
+StormEvents
+| summarize TotalStorms = count() by State

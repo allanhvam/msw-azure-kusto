@@ -1,0 +1,12 @@
+StormEvents
+| summarize InjuriesCount = sum(InjuriesDirect) by State
+| extend InjuriesBucket = case (
+                              InjuriesCount > 50,
+                              "Large",
+                              InjuriesCount > 10,
+                              "Medium",
+                              InjuriesCount > 0,
+                              "Small",
+                              "No injuries"
+                          )
+| summarize InjuryBucketByState=count() by InjuriesBucket

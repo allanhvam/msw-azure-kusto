@@ -1,0 +1,10 @@
+// matches regex + string transforms
+datatable(State:string, EventType:string)
+[
+  "California", "Flood Warning",
+  "Texas", "Hailstorm",
+  "Florida", "Flood Advisory"
+]
+| where EventType matches regex @"^Flood.*"
+| project LowerState = tolower(State), UpperEventType = toupper(EventType)
+| order by LowerState asc

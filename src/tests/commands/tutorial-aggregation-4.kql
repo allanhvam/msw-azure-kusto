@@ -1,0 +1,4 @@
+StormEvents
+| where StartTime between (datetime(2007-01-01) .. datetime(2007-12-31)) 
+    and DamageCrops > 0
+| summarize EventCount = count() by bin(StartTime, 7d)

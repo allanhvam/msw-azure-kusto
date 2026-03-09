@@ -1,0 +1,1634 @@
+import { getRowIngestionTime } from './ingestion-time.js';
+import type { UnnamedExpressionContext } from '../parser/KqlParser.js';
+import type { KustoRow, KustoScalar } from './types.js';
+
+export type ExpressionAstEvaluatorOptions = {
+  parseScalar: (text: string) => KustoScalar;
+  normalizeScalar: (value: unknown) => KustoScalar;
+  compareValues: (left: KustoScalar, right: KustoScalar) => number;
+  resolveLetScalar: (name: string) => KustoScalar | undefined;
+  evaluateToScalarExpression: (toScalarExpression: unknown) => KustoScalar;
+};
+
+export class ExpressionAstEvaluator {
+  private readonly options: ExpressionAstEvaluatorOptions;
+
+  public constructor(options: ExpressionAstEvaluatorOptions) {
+    this.options = options;
+  }
+
+  public evaluateUnnamedExpression(unnamedExpression: UnnamedExpressionContext, row: KustoRow): KustoScalar {
+    return this.evaluateLogicalOrExpression(
+      (unnamedExpression as { logicalOrExpression(): unknown }).logicalOrExpression(),
+      row,
+    );
+  }
+
+  public createRangeRows(
+    columnName: string,
+    fromExpression: UnnamedExpressionContext,
+    toExpression: UnnamedExpressionContext,
+    stepExpression: UnnamedExpressionContext,
+  ): KustoRow[] {
+    const from = this.evaluateUnnamedExpression(fromExpression, {});
+    const to = this.evaluateUnnamedExpression(toExpression, {});
+    const step = this.evaluateUnnamedExpression(stepExpression, {});
+
+    const fromNumber = Number(from);
+    const toNumber = Number(to);
+    const stepNumber = Number(step);
+    if (Number.isFinite(fromNumber) && Number.isFinite(toNumber) && Number.isFinite(stepNumber) && stepNumber > 0) {
+      const rows: KustoRow[] = [];
+      for (let current = fromNumber; current <= toNumber; current += stepNumber) {
+        rows.push({ [columnName]: current });
+      }
+
+      return rows;
+    }
+
+    const fromDate = this.toDate(from);
+    const toDate = this.toDate(to);
+    const stepMilliseconds = this.toTimespanMilliseconds(step);
+    if (fromDate && toDate && stepMilliseconds !== null && stepMilliseconds > 0) {
+      const rows: KustoRow[] = [];
+      for (let current = fromDate.getTime(); current <= toDate.getTime(); current += stepMilliseconds) {
+        rows.push({ [columnName]: new Date(current).toISOString() });
+      }
+
+      return rows;
+    }
+
+    throw new Error('Unsupported range expression values.');
+  }
+
+  private evaluateLogicalOrExpression(logicalOrExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = logicalOrExpression as {
+      logicalAndExpression(): unknown;
+      logicalOrOperation(): Array<{ logicalAndExpression(): unknown }>;
+    };
+
+    const operations = expression.logicalOrOperation();
+    if (operations.length === 0) {
+      return this.evaluateLogicalAndExpression(expression.logicalAndExpression(), row);
+    }
+
+    let value = Boolean(this.evaluateLogicalAndExpression(expression.logicalAndExpression(), row));
+    for (const operation of operations) {
+      value = value || Boolean(this.evaluateLogicalAndExpression(operation.logicalAndExpression(), row));
+    }
+
+    return value;
+  }
+
+  private evaluateLogicalAndExpression(logicalAndExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = logicalAndExpression as {
+      equalityExpression(): unknown;
+      logicalAndOperation(): Array<{ equalityExpression(): unknown }>;
+    };
+
+    const operations = expression.logicalAndOperation();
+    if (operations.length === 0) {
+      return this.evaluateEqualityExpression(expression.equalityExpression(), row);
+    }
+
+    let value = Boolean(this.evaluateEqualityExpression(expression.equalityExpression(), row));
+    for (const operation of operations) {
+      value = value && Boolean(this.evaluateEqualityExpression(operation.equalityExpression(), row));
+    }
+
+    return value;
+  }
+
+  private evaluateEqualityExpression(equalityExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = equalityExpression as {
+      relationalExpression(): unknown | null;
+      listEqualityExpression():
+        | {
+            relationalExpression(): unknown;
+            invocationExpression(): unknown[];
+            IN(): unknown | null;
+            NOT_IN(): unknown | null;
+            IN_CI(): unknown | null;
+            NOT_IN_CI(): unknown | null;
+          }
+        | null;
+      betweenEqualityExpression():
+        | {
+            relationalExpression(): unknown;
+            invocationExpression(): [unknown, unknown];
+            BETWEEN(): unknown | null;
+            NOT_BETWEEN(): unknown | null;
+          }
+        | null;
+      equalsEqualityExpression():
+        | {
+            relationalExpression(): [unknown, unknown];
+            EQUALEQUAL(): unknown | null;
+          }
+        | null;
+    };
+
+    const list = expression.listEqualityExpression();
+    if (list) {
+      const leftValue = this.evaluateRelationalExpression(list.relationalExpression(), row);
+      const listValues = list.invocationExpression().map((item) => this.evaluateInvocationExpression(item, row));
+      const isIn = listValues.some((item) => this.options.compareValues(leftValue, item) === 0);
+
+      if (list.NOT_IN() || list.NOT_IN_CI()) {
+        return !isIn;
+      }
+
+      if (list.IN() || list.IN_CI()) {
+        return isIn;
+      }
+
+      throw new Error('Unsupported list equality expression operator.');
+    }
+
+    const between = expression.betweenEqualityExpression();
+    if (between) {
+      const leftValue = this.evaluateRelationalExpression(between.relationalExpression(), row);
+      const [startExpression, endExpression] = between.invocationExpression();
+      const startValue = this.evaluateInvocationExpression(startExpression, row);
+      const endValue = this.evaluateInvocationExpression(endExpression, row);
+      const leftDate = this.toDate(leftValue);
+      const startDate = this.toDate(startValue);
+      const endDate = this.toDate(endValue);
+      const isBetween =
+        leftDate && startDate && endDate
+          ? leftDate.getTime() >= startDate.getTime() && leftDate.getTime() <= endDate.getTime()
+          : this.options.compareValues(leftValue, startValue) >= 0 && this.options.compareValues(leftValue, endValue) <= 0;
+      return between.NOT_BETWEEN() ? !isBetween : isBetween;
+    }
+
+    const equals = expression.equalsEqualityExpression();
+    if (equals) {
+      const [left, right] = equals.relationalExpression();
+      const leftValue = this.evaluateRelationalExpression(left, row);
+      const rightValue = this.evaluateRelationalExpression(right, row);
+      const isEqual = this.compareScalars(leftValue, rightValue) === 0;
+      return equals.EQUALEQUAL() ? isEqual : !isEqual;
+    }
+
+    const direct = expression.relationalExpression();
+    if (direct) {
+      return this.evaluateRelationalExpression(direct, row);
+    }
+
+    throw new Error('Unsupported equality expression.');
+  }
+
+  private evaluateRelationalExpression(relationalExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = relationalExpression as {
+      additiveExpression(): unknown[];
+      LESSTHAN(): unknown | null;
+      GREATERTHAN(): unknown | null;
+      LESSTHAN_EQUAL(): unknown | null;
+      GREATERTHAN_EQUAL(): unknown | null;
+    };
+
+    const additiveExpressions = expression.additiveExpression();
+    const leftValue = this.evaluateAdditiveExpression(additiveExpressions[0], row);
+    if (additiveExpressions.length === 1) {
+      return leftValue;
+    }
+
+    const rightValue = this.evaluateAdditiveExpression(additiveExpressions[1], row);
+    const comparison = this.compareScalars(leftValue, rightValue);
+    if (expression.LESSTHAN()) {
+      return comparison < 0;
+    }
+
+    if (expression.GREATERTHAN()) {
+      return comparison > 0;
+    }
+
+    if (expression.LESSTHAN_EQUAL()) {
+      return comparison <= 0;
+    }
+
+    if (expression.GREATERTHAN_EQUAL()) {
+      return comparison >= 0;
+    }
+
+    throw new Error('Unsupported relational expression.');
+  }
+
+  private evaluateAdditiveExpression(additiveExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = additiveExpression as {
+      multiplicativeExpression(): unknown;
+      additiveOperation(): Array<{
+        PLUS(): unknown | null;
+        multiplicativeExpression(): unknown;
+      }>;
+    };
+
+    const operations = expression.additiveOperation();
+    if (operations.length === 0) {
+      return this.evaluateMultiplicativeExpression(expression.multiplicativeExpression(), row);
+    }
+
+    let value = this.evaluateMultiplicativeExpression(expression.multiplicativeExpression(), row);
+    for (const operation of operations) {
+      const right = this.evaluateMultiplicativeExpression(operation.multiplicativeExpression(), row);
+      value = this.evaluateAdditiveOperation(value, right, Boolean(operation.PLUS()));
+    }
+
+    return value;
+  }
+
+  private evaluateMultiplicativeExpression(multiplicativeExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = multiplicativeExpression as {
+      stringOperatorExpression(): { getText(): string };
+      multiplicativeOperation(): Array<{
+        ASTERISK(): unknown | null;
+        SLASH(): unknown | null;
+        stringOperatorExpression(): { getText(): string };
+      }>;
+    };
+
+    const operations = expression.multiplicativeOperation();
+    if (operations.length === 0) {
+      return this.evaluateStringOperatorExpression(expression.stringOperatorExpression(), row);
+    }
+
+    const initialExpression = expression.stringOperatorExpression();
+    let value = Number(this.evaluateStringOperatorExpression(initialExpression, row));
+    let hasRealSemantics = this.expressionHasRealNumberSemantics(initialExpression.getText());
+
+    for (const operation of operations) {
+      const rightExpression = operation.stringOperatorExpression();
+      const right = Number(this.evaluateStringOperatorExpression(rightExpression, row));
+      const rightHasRealSemantics = this.expressionHasRealNumberSemantics(rightExpression.getText());
+
+      if (operation.ASTERISK()) {
+        value *= right;
+        hasRealSemantics = hasRealSemantics || rightHasRealSemantics;
+      } else if (operation.SLASH()) {
+        if (!hasRealSemantics && !rightHasRealSemantics && Number.isInteger(value) && Number.isInteger(right)) {
+          value = Math.trunc(value / right);
+        } else {
+          value /= right;
+          hasRealSemantics = true;
+        }
+      } else {
+        value %= right;
+        hasRealSemantics = hasRealSemantics || rightHasRealSemantics;
+      }
+    }
+
+    return value;
+  }
+
+  private expressionHasRealNumberSemantics(expressionText: string): boolean {
+    const text = expressionText.toLowerCase();
+    if (text.includes('todouble(')) {
+      return true;
+    }
+
+    // Decimal and scientific-notation literals imply floating-point arithmetic.
+    if (/\b\d+\.\d+\b/.test(text) || /\b\d+(?:\.\d+)?e[+-]?\d+\b/i.test(text)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private evaluateStringOperatorExpression(stringOperatorExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = stringOperatorExpression as {
+      stringBinaryOperatorExpression():
+        | {
+            invocationExpression(): unknown;
+            stringBinaryOperation():
+              | {
+                  invocationExpression(): unknown;
+                  stringBinaryOperator(): { getText(): string } | null;
+                }
+              | null;
+          }
+        | null;
+      stringStarOperatorExpression():
+        | {
+            stringBinaryOperator(): { getText(): string };
+            invocationExpression(): unknown;
+          }
+        | null;
+    };
+
+    const binaryExpression = expression.stringBinaryOperatorExpression();
+    if (binaryExpression) {
+      const leftValue = this.evaluateInvocationExpression(binaryExpression.invocationExpression(), row);
+      const operation = binaryExpression.stringBinaryOperation();
+      if (!operation) {
+        return leftValue;
+      }
+
+      const rightValue = this.evaluateInvocationExpression(operation.invocationExpression(), row);
+      const operator = operation.stringBinaryOperator();
+      const operatorText = operator ? operator.getText().toLowerCase() : 'has';
+      return this.evaluateStringBinaryOperator(operatorText, leftValue, rightValue);
+    }
+
+    const starExpression = expression.stringStarOperatorExpression();
+    if (starExpression) {
+      const operator = starExpression.stringBinaryOperator().getText().toLowerCase();
+      const rightValue = this.evaluateInvocationExpression(starExpression.invocationExpression(), row);
+      // * <operator> value — matches any column (unsupported), but we evaluate the operator against empty string
+      return this.evaluateStringBinaryOperator(operator, '', rightValue);
+    }
+
+    throw new Error('Unsupported string operator expression.');
+  }
+
+  private evaluateStringBinaryOperator(operator: string, left: KustoScalar, right: KustoScalar): boolean {
+    const leftStr = left === null || left === undefined ? '' : String(left);
+    const rightStr = right === null || right === undefined ? '' : String(right);
+
+    switch (operator) {
+      case '=~':
+        return leftStr.toLowerCase() === rightStr.toLowerCase();
+      case '!~':
+        return leftStr.toLowerCase() !== rightStr.toLowerCase();
+      case 'has':
+      case ':':
+        return this.kustoHas(leftStr, rightStr, false);
+      case '!has':
+        return !this.kustoHas(leftStr, rightStr, false);
+      case 'has_cs':
+        return this.kustoHas(leftStr, rightStr, true);
+      case '!has_cs':
+        return !this.kustoHas(leftStr, rightStr, true);
+      case 'hasprefix':
+        return leftStr.toLowerCase().startsWith(rightStr.toLowerCase());
+      case '!hasprefix':
+        return !leftStr.toLowerCase().startsWith(rightStr.toLowerCase());
+      case 'hasprefix_cs':
+        return leftStr.startsWith(rightStr);
+      case '!hasprefix_cs':
+        return !leftStr.startsWith(rightStr);
+      case 'hassuffix':
+        return leftStr.toLowerCase().endsWith(rightStr.toLowerCase());
+      case '!hassuffix':
+        return !leftStr.toLowerCase().endsWith(rightStr.toLowerCase());
+      case 'hassuffix_cs':
+        return leftStr.endsWith(rightStr);
+      case '!hassuffix_cs':
+        return !leftStr.endsWith(rightStr);
+      case 'contains':
+      case 'contains_cs': {
+        const cs = operator === 'contains_cs';
+        return cs ? leftStr.includes(rightStr) : leftStr.toLowerCase().includes(rightStr.toLowerCase());
+      }
+      case 'notcontains':
+      case '!contains':
+        return !leftStr.toLowerCase().includes(rightStr.toLowerCase());
+      case 'notcontains_cs':
+      case '!contains_cs':
+        return !leftStr.includes(rightStr);
+      case 'startswith':
+        return leftStr.toLowerCase().startsWith(rightStr.toLowerCase());
+      case '!startswith':
+        return !leftStr.toLowerCase().startsWith(rightStr.toLowerCase());
+      case 'startswith_cs':
+        return leftStr.startsWith(rightStr);
+      case '!startswith_cs':
+        return !leftStr.startsWith(rightStr);
+      case 'endswith':
+        return leftStr.toLowerCase().endsWith(rightStr.toLowerCase());
+      case '!endswith':
+        return !leftStr.toLowerCase().endsWith(rightStr.toLowerCase());
+      case 'endswith_cs':
+        return leftStr.endsWith(rightStr);
+      case '!endswith_cs':
+        return !leftStr.endsWith(rightStr);
+      case 'matches regex':
+      case 'matches_regex': {
+        const regex = new RegExp(rightStr);
+        return regex.test(leftStr);
+      }
+      default:
+        throw new Error(`Unsupported string binary operator: ${operator}`);
+    }
+  }
+
+  private kustoHas(source: string, term: string, caseSensitive: boolean): boolean {
+    const s = caseSensitive ? source : source.toLowerCase();
+    const t = caseSensitive ? term : term.toLowerCase();
+    if (t.length === 0) {
+      return true;
+    }
+
+    const index = s.indexOf(t);
+    if (index === -1) {
+      return false;
+    }
+
+    const isWordBoundary = (ch: string | undefined): boolean => {
+      if (ch === undefined) {
+        return true;
+      }
+
+      return !/[\p{L}\p{N}_]/u.test(ch);
+    };
+
+    // Check all occurrences for whole-term match
+    let pos = 0;
+    while (true) {
+      const idx = s.indexOf(t, pos);
+      if (idx === -1) {
+        return false;
+      }
+
+      if (isWordBoundary(s[idx - 1]) && isWordBoundary(s[idx + t.length])) {
+        return true;
+      }
+
+      pos = idx + 1;
+    }
+  }
+
+  private evaluateInvocationExpression(invocationExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = invocationExpression as {
+      PLUS(): unknown | null;
+      DASH(): unknown | null;
+      functionCallOrPathExpression(): unknown;
+    };
+
+    const value = this.evaluateFunctionCallOrPathExpression(expression.functionCallOrPathExpression(), row);
+    if (expression.PLUS()) {
+      return Number(value);
+    }
+
+    if (expression.DASH()) {
+      return -Number(value);
+    }
+
+    return value;
+  }
+
+  private evaluateFunctionCallOrPathExpression(functionCallOrPathExpression: unknown, row: KustoRow): KustoScalar {
+    const expression = functionCallOrPathExpression as {
+      functionCallOrPathRoot(): unknown | null;
+      functionCallOrPathPathExpression():
+        | {
+            functionCallOrPathRoot(): unknown;
+            functionCallOrPathOperation(): Array<{
+              functionCallOrPathPathOperation():
+                | {
+                    identifierOrKeywordOrEscapedName(): { getText(): string };
+                  }
+                | null;
+              functionCallOrPathElementOperation():
+                | {
+                    unnamedExpression(): UnnamedExpressionContext;
+                  }
+                | null;
+            }>;
+          }
+        | null;
+      toTableExpression(): unknown | null;
+    };
+
+    if (expression.toTableExpression()) {
+      throw new Error('toTable() is not supported.');
+    }
+
+    const pathExpression = expression.functionCallOrPathPathExpression();
+    if (pathExpression) {
+      let current: unknown = this.evaluateFunctionCallOrPathRoot(pathExpression.functionCallOrPathRoot(), row);
+      for (const operation of pathExpression.functionCallOrPathOperation()) {
+        current = this.coerceDynamicContainer(current);
+        const pathOperation = operation.functionCallOrPathPathOperation();
+        if (pathOperation) {
+          const name = pathOperation.identifierOrKeywordOrEscapedName().getText();
+          if (current && typeof current === 'object') {
+            current = (current as Record<string, unknown>)[name];
+            continue;
+          }
+
+          throw new Error(`Cannot access path '${name}' on non-object value.`);
+        }
+
+        const elementOperation = operation.functionCallOrPathElementOperation();
+        if (elementOperation) {
+          const index = this.evaluateUnnamedExpression(elementOperation.unnamedExpression(), row);
+          if (Array.isArray(current)) {
+            current = current[Number(index)];
+            continue;
+          }
+
+          if (current && typeof current === 'object') {
+            current = (current as Record<string, unknown>)[String(index)];
+            continue;
+          }
+
+          throw new Error('Cannot index non-collection value.');
+        }
+      }
+
+      return this.options.normalizeScalar(current);
+    }
+
+    const root = expression.functionCallOrPathRoot();
+    if (!root) {
+      throw new Error('Unsupported invocation root.');
+    }
+
+    return this.evaluateFunctionCallOrPathRoot(root, row);
+  }
+
+  private evaluateFunctionCallOrPathRoot(functionCallOrPathRoot: unknown, row: KustoRow): KustoScalar {
+    const root = functionCallOrPathRoot as {
+      primaryExpression():
+        | {
+            unsignedLiteralExpression(): unknown | null;
+            nameReferenceWithDataScope():
+              | {
+                  simpleNameReference(): { getText(): string };
+                }
+              | null;
+            parenthesizedExpression():
+              | {
+                  expression(): {
+                    pipeExpression(): {
+                      beforePipeExpression(): {
+                        unnamedExpression(): UnnamedExpressionContext | null;
+                      };
+                      pipedOperator(): unknown[];
+                    };
+                  };
+                }
+              | null;
+          }
+        | null;
+      dotCompositeFunctionCallExpression(): unknown | null;
+      toScalarExpression(): unknown | null;
+    };
+
+    const functionCallExpression = root.dotCompositeFunctionCallExpression();
+    if (functionCallExpression) {
+      return this.evaluateDotCompositeFunctionCallExpression(functionCallExpression, row);
+    }
+
+    const toScalarExpression = root.toScalarExpression();
+    if (toScalarExpression) {
+      return this.options.evaluateToScalarExpression(toScalarExpression);
+    }
+
+    const primary = root.primaryExpression();
+    if (!primary) {
+      throw new Error('Unsupported primary expression.');
+    }
+
+    const literal = primary.unsignedLiteralExpression();
+    if (literal) {
+      return this.options.parseScalar((literal as { getText(): string }).getText());
+    }
+
+    const nameReference = primary.nameReferenceWithDataScope();
+    if (nameReference) {
+      const name = nameReference.simpleNameReference().getText();
+      if (Object.hasOwn(row, name)) {
+        return row[name];
+      }
+
+      const letBinding = this.options.resolveLetScalar(name);
+      if (letBinding !== undefined) {
+        return letBinding;
+      }
+
+      return null;
+    }
+
+    const parenthesized = primary.parenthesizedExpression();
+    if (parenthesized) {
+      const innerPipe = parenthesized.expression().pipeExpression();
+      if (innerPipe.pipedOperator().length > 0) {
+        throw new Error('Piped subexpressions are not supported inside scalar expressions.');
+      }
+
+      const inner = innerPipe.beforePipeExpression().unnamedExpression();
+      if (!inner) {
+        throw new Error('Unsupported parenthesized expression.');
+      }
+
+      return this.evaluateUnnamedExpression(inner, row);
+    }
+
+    throw new Error(`Unsupported primary expression: ${(primary as unknown as { getText(): string }).getText()}`);
+  }
+
+  private evaluateDotCompositeFunctionCallExpression(
+    dotCompositeFunctionCallExpression: unknown,
+    row: KustoRow,
+  ): KustoScalar {
+    const functionCall = this.getSimpleFunctionCall(dotCompositeFunctionCallExpression);
+    if (!functionCall) {
+      throw new Error(`Unsupported function call: ${(dotCompositeFunctionCallExpression as { getText(): string }).getText()}`);
+    }
+
+    const functionName = functionCall.name.toLowerCase();
+    const argumentsValues = functionCall.arguments.map((argument) => this.evaluateUnnamedExpression(argument, row));
+
+    if (functionName === 'ingestion_time') {
+      if (argumentsValues.length !== 0) {
+        throw new Error('ingestion_time() does not take arguments.');
+      }
+
+      return getRowIngestionTime(row);
+    }
+
+    if (functionName === 'bin') {
+      if (argumentsValues.length !== 2) {
+        throw new Error('bin() expects exactly two arguments.');
+      }
+
+      return this.evaluateBinFunction(argumentsValues[0], argumentsValues[1]);
+    }
+
+    if (functionName === 'datetime_add') {
+      if (argumentsValues.length !== 3) {
+        throw new Error('datetime_add() expects exactly three arguments.');
+      }
+
+      return this.evaluateDatetimeAddFunction(argumentsValues[0], argumentsValues[1], argumentsValues[2]);
+    }
+
+    if (functionName === 'datetime_diff') {
+      if (argumentsValues.length !== 3) {
+        throw new Error('datetime_diff() expects exactly three arguments.');
+      }
+
+      return this.evaluateDatetimeDiffFunction(argumentsValues[0], argumentsValues[1], argumentsValues[2]);
+    }
+
+    if (functionName === 'not') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('not() expects exactly one argument.');
+      }
+
+      return !argumentsValues[0];
+    }
+
+    if (functionName === 'todatetime') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('todatetime() expects exactly one argument.');
+      }
+
+      const date = this.toDate(argumentsValues[0]);
+      return date ? date.toISOString() : null;
+    }
+
+    if (functionName === 'todouble') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('todouble() expects exactly one argument.');
+      }
+
+      return this.evaluateToDoubleFunction(argumentsValues[0]);
+    }
+
+    if (functionName === 'round') {
+      if (argumentsValues.length < 1 || argumentsValues.length > 2) {
+        throw new Error('round() expects one or two arguments.');
+      }
+
+      return this.evaluateRoundFunction(argumentsValues[0], argumentsValues[1]);
+    }
+
+    if (functionName === 'array_length') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('array_length() expects exactly one argument.');
+      }
+
+      return this.evaluateArrayLengthFunction(argumentsValues[0]);
+    }
+
+    if (functionName === 'iff') {
+      if (argumentsValues.length !== 3) {
+        throw new Error('iff() expects exactly three arguments.');
+      }
+
+      return argumentsValues[0] ? argumentsValues[1] : argumentsValues[2];
+    }
+
+    if (functionName === 'case') {
+      if (argumentsValues.length < 3 || argumentsValues.length % 2 === 0) {
+        throw new Error('case() expects an odd number of arguments with an else value.');
+      }
+
+      return this.evaluateCaseFunction(argumentsValues);
+    }
+
+    if (functionName === 'startofday') {
+      if (argumentsValues.length < 1 || argumentsValues.length > 2) {
+        throw new Error('startofday() expects one or two arguments.');
+      }
+
+      return this.evaluateStartOfDayFunction(argumentsValues[0], argumentsValues[1]);
+    }
+
+    if (functionName === 'bin_at') {
+      if (argumentsValues.length !== 3) {
+        throw new Error('bin_at() expects exactly three arguments.');
+      }
+
+      return this.evaluateBinAtFunction(argumentsValues[0], argumentsValues[1], argumentsValues[2]);
+    }
+
+    if (functionName === 'range') {
+      if (argumentsValues.length !== 3) {
+        throw new Error('range() expects exactly three arguments.');
+      }
+
+      return this.evaluateRangeFunction(argumentsValues[0], argumentsValues[1], argumentsValues[2]);
+    }
+
+    if (functionName === 'strlen') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('strlen() expects exactly one argument.');
+      }
+
+      const str = argumentsValues[0];
+      return str === null || str === undefined ? null : String(str).length;
+    }
+
+    if (functionName === 'toupper') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('toupper() expects exactly one argument.');
+      }
+
+      const str = argumentsValues[0];
+      return str === null || str === undefined ? '' : String(str).toUpperCase();
+    }
+
+    if (functionName === 'tolower') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('tolower() expects exactly one argument.');
+      }
+
+      const str = argumentsValues[0];
+      return str === null || str === undefined ? '' : String(str).toLowerCase();
+    }
+
+    if (functionName === 'substring') {
+      if (argumentsValues.length < 2 || argumentsValues.length > 3) {
+        throw new Error('substring() expects two or three arguments.');
+      }
+
+      const str = argumentsValues[0] === null || argumentsValues[0] === undefined ? '' : String(argumentsValues[0]);
+      const start = Number(argumentsValues[1]);
+      if (!Number.isFinite(start)) {
+        return '';
+      }
+
+      if (argumentsValues.length === 3) {
+        const length = Number(argumentsValues[2]);
+        if (!Number.isFinite(length)) {
+          return '';
+        }
+
+        return str.substring(start, start + length);
+      }
+
+      return str.substring(start);
+    }
+
+    if (functionName === 'split') {
+      if (argumentsValues.length < 2 || argumentsValues.length > 3) {
+        throw new Error('split() expects two or three arguments.');
+      }
+
+      const str = argumentsValues[0] === null || argumentsValues[0] === undefined ? '' : String(argumentsValues[0]);
+      const delimiter = argumentsValues[1] === null || argumentsValues[1] === undefined ? '' : String(argumentsValues[1]);
+      const parts = str.split(delimiter);
+
+      if (argumentsValues.length === 3) {
+        const index = Number(argumentsValues[2]);
+        return Number.isFinite(index) && index >= 0 && index < parts.length ? parts[index] : null;
+      }
+
+      return parts as unknown as KustoScalar;
+    }
+
+    if (functionName === 'strcat') {
+      if (argumentsValues.length < 1) {
+        throw new Error('strcat() expects at least one argument.');
+      }
+
+      return argumentsValues.map((v) => (v === null || v === undefined ? '' : String(v))).join('');
+    }
+
+    if (functionName === 'strcat_delim') {
+      if (argumentsValues.length < 3) {
+        throw new Error('strcat_delim() expects at least three arguments.');
+      }
+
+      const delimiter = argumentsValues[0] === null || argumentsValues[0] === undefined ? '' : String(argumentsValues[0]);
+      return argumentsValues.slice(1).map((v) => (v === null || v === undefined ? '' : String(v))).join(delimiter);
+    }
+
+    if (functionName === 'trim') {
+      if (argumentsValues.length !== 2) {
+        throw new Error('trim() expects exactly two arguments.');
+      }
+
+      const regexText = String(argumentsValues[0]);
+      const str = argumentsValues[1] === null || argumentsValues[1] === undefined ? '' : String(argumentsValues[1]);
+      const startRegex = new RegExp(`^(?:${regexText})`);
+      const endRegex = new RegExp(`(?:${regexText})$`);
+      return str.replace(startRegex, '').replace(endRegex, '');
+    }
+
+    if (functionName === 'trim_start') {
+      if (argumentsValues.length !== 2) {
+        throw new Error('trim_start() expects exactly two arguments.');
+      }
+
+      const regexText = String(argumentsValues[0]);
+      const str = argumentsValues[1] === null || argumentsValues[1] === undefined ? '' : String(argumentsValues[1]);
+      return str.replace(new RegExp(`^(?:${regexText})`), '');
+    }
+
+    if (functionName === 'trim_end') {
+      if (argumentsValues.length !== 2) {
+        throw new Error('trim_end() expects exactly two arguments.');
+      }
+
+      const regexText = String(argumentsValues[0]);
+      const str = argumentsValues[1] === null || argumentsValues[1] === undefined ? '' : String(argumentsValues[1]);
+      return str.replace(new RegExp(`(?:${regexText})$`), '');
+    }
+
+    if (functionName === 'extract') {
+      if (argumentsValues.length < 2 || argumentsValues.length > 3) {
+        throw new Error('extract() expects two or three arguments.');
+      }
+
+      const regexText = String(argumentsValues[0]);
+      const captureGroup = argumentsValues.length === 3 ? Number(argumentsValues[1]) : 1;
+      const text = argumentsValues.length === 3
+        ? (argumentsValues[2] === null || argumentsValues[2] === undefined ? '' : String(argumentsValues[2]))
+        : (argumentsValues[1] === null || argumentsValues[1] === undefined ? '' : String(argumentsValues[1]));
+      const match = new RegExp(regexText).exec(text);
+      if (!match) {
+        return '';
+      }
+
+      return match[captureGroup] ?? '';
+    }
+
+    if (functionName === 'indexof') {
+      if (argumentsValues.length < 2 || argumentsValues.length > 4) {
+        throw new Error('indexof() expects two to four arguments.');
+      }
+
+      const str = argumentsValues[0] === null || argumentsValues[0] === undefined ? '' : String(argumentsValues[0]);
+      const lookup = argumentsValues[1] === null || argumentsValues[1] === undefined ? '' : String(argumentsValues[1]);
+      const startIndex = argumentsValues.length >= 3 ? Number(argumentsValues[2]) : 0;
+      return str.indexOf(lookup, Number.isFinite(startIndex) ? startIndex : 0);
+    }
+
+    if (functionName === 'replace_string') {
+      if (argumentsValues.length !== 3) {
+        throw new Error('replace_string() expects exactly three arguments.');
+      }
+
+      const str = argumentsValues[0] === null || argumentsValues[0] === undefined ? '' : String(argumentsValues[0]);
+      const oldStr = argumentsValues[1] === null || argumentsValues[1] === undefined ? '' : String(argumentsValues[1]);
+      const newStr = argumentsValues[2] === null || argumentsValues[2] === undefined ? '' : String(argumentsValues[2]);
+      return str.replaceAll(oldStr, newStr);
+    }
+
+    if (functionName === 'parse_json') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('parse_json() expects exactly one argument.');
+      }
+
+      const value = argumentsValues[0];
+      if (value === null || value === undefined) {
+        return null;
+      }
+
+      if (Array.isArray(value) || (typeof value === 'object' && !(value instanceof Date))) {
+        return this.options.normalizeScalar(value);
+      }
+
+      const text = String(value).trim();
+      if (text.length === 0) {
+        return null;
+      }
+
+      try {
+        return this.options.normalizeScalar(JSON.parse(text));
+      } catch {
+        return this.options.normalizeScalar(value);
+      }
+    }
+
+    if (functionName === 'materialize') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('materialize() expects exactly one argument.');
+      }
+
+      return this.options.normalizeScalar(argumentsValues[0]);
+    }
+
+    if (functionName === 'series_decompose_anomalies') {
+      if (argumentsValues.length < 1 || argumentsValues.length > 3) {
+        throw new Error('series_decompose_anomalies() expects one to three arguments.');
+      }
+
+      const series = argumentsValues[0];
+      if (!Array.isArray(series)) {
+        return null;
+      }
+
+      const numericSeries = series.map((value) => Number(value));
+      const finiteValues = numericSeries.filter((value) => Number.isFinite(value));
+      if (finiteValues.length === 0) {
+        return series.map(() => 0) as unknown as KustoScalar;
+      }
+
+      const mean = finiteValues.reduce((sum, value) => sum + value, 0) / finiteValues.length;
+      const variance = finiteValues.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / finiteValues.length;
+      const standardDeviation = Math.sqrt(variance);
+      const zThreshold = argumentsValues.length >= 2 && Number.isFinite(Number(argumentsValues[1]))
+        ? Math.abs(Number(argumentsValues[1]))
+        : 1.5;
+
+      if (standardDeviation === 0) {
+        return series.map(() => 0) as unknown as KustoScalar;
+      }
+
+      const anomalies = numericSeries.map((value) => {
+        if (!Number.isFinite(value)) {
+          return 0;
+        }
+
+        const zScore = (value - mean) / standardDeviation;
+        return zScore > zThreshold ? 1 : 0;
+      });
+
+      return anomalies as unknown as KustoScalar;
+    }
+
+    if (functionName === 'tostring') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('tostring() expects exactly one argument.');
+      }
+
+      const val = argumentsValues[0];
+      if (val === null || val === undefined) {
+        return '';
+      }
+
+      return String(val);
+    }
+
+    if (functionName === 'isempty' || functionName === 'isnotempty' || functionName === 'isnotnull' || functionName === 'isnull') {
+      if (argumentsValues.length !== 1) {
+        throw new Error(`${functionName}() expects exactly one argument.`);
+      }
+
+      const val = argumentsValues[0];
+      if (functionName === 'isempty') {
+        return val === null || val === undefined || val === '';
+      }
+
+      if (functionName === 'isnotempty') {
+        return !(val === null || val === undefined || val === '');
+      }
+
+      const isNull = val === null || val === undefined;
+      if (functionName === 'isnull') {
+        return isNull;
+      }
+
+      return !isNull;
+    }
+
+    if (functionName === 'countof') {
+      if (argumentsValues.length < 2 || argumentsValues.length > 3) {
+        throw new Error('countof() expects two or three arguments.');
+      }
+
+      const str = argumentsValues[0] === null || argumentsValues[0] === undefined ? '' : String(argumentsValues[0]);
+      const search = argumentsValues[1] === null || argumentsValues[1] === undefined ? '' : String(argumentsValues[1]);
+      const kind = argumentsValues.length === 3 ? String(argumentsValues[2]).toLowerCase() : 'normal';
+      if (kind === 'regex') {
+        const regex = new RegExp(search, 'g');
+        const matches = str.match(regex);
+        return matches ? matches.length : 0;
+      }
+
+      if (search.length === 0) {
+        return 0;
+      }
+
+      let count = 0;
+      let pos = 0;
+      while (true) {
+        const idx = str.indexOf(search, pos);
+        if (idx === -1) {
+          break;
+        }
+
+        count++;
+        pos = idx + 1;
+      }
+
+      return count;
+    }
+
+    if (functionName === 'reverse') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('reverse() expects exactly one argument.');
+      }
+
+      const str = argumentsValues[0] === null || argumentsValues[0] === undefined ? '' : String(argumentsValues[0]);
+      return [...str].reverse().join('');
+    }
+
+    if (functionName === 'toint' || functionName === 'tolong') {
+      if (argumentsValues.length !== 1) {
+        throw new Error(`${functionName}() expects exactly one argument.`);
+      }
+
+      const val = argumentsValues[0];
+      if (val === null || val === undefined) {
+        return null;
+      }
+
+      const num = Number(val);
+      return Number.isFinite(num) ? Math.trunc(num) : null;
+    }
+
+    if (functionName === 'tobool') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('tobool() expects exactly one argument.');
+      }
+
+      const val = argumentsValues[0];
+      if (val === null || val === undefined) {
+        return null;
+      }
+
+      if (typeof val === 'boolean') {
+        return val;
+      }
+
+      const str = String(val).toLowerCase();
+      if (str === 'true' || str === '1') {
+        return true;
+      }
+
+      if (str === 'false' || str === '0') {
+        return false;
+      }
+
+      return null;
+    }
+
+    if (functionName === 'coalesce') {
+      for (const val of argumentsValues) {
+        if (val !== null && val !== undefined && val !== '') {
+          return val;
+        }
+      }
+
+      return null;
+    }
+
+    if (functionName === 'now') {
+      if (argumentsValues.length !== 0) {
+        throw new Error('now() does not take arguments.');
+      }
+
+      return new Date().toISOString();
+    }
+
+    if (functionName === 'ago') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('ago() expects exactly one argument.');
+      }
+
+      const timespanMilliseconds = this.toTimespanMilliseconds(argumentsValues[0]);
+      if (timespanMilliseconds === null) {
+        return null;
+      }
+
+      return new Date(Date.now() - timespanMilliseconds).toISOString();
+    }
+
+    if (
+      functionName === 'year'
+      || functionName === 'month'
+      || functionName === 'day'
+      || functionName === 'hour'
+      || functionName === 'minute'
+      || functionName === 'dayofweek'
+    ) {
+      if (argumentsValues.length !== 1) {
+        throw new Error(`${functionName}() expects exactly one argument.`);
+      }
+
+      return this.evaluateDateComponentFunction(functionName, argumentsValues[0]);
+    }
+
+    throw new Error(`Unsupported function call: ${(dotCompositeFunctionCallExpression as { getText(): string }).getText()}`);
+  }
+
+  private getSimpleFunctionCall(
+    dotCompositeFunctionCallExpression: unknown,
+  ): { name: string; arguments: UnnamedExpressionContext[] } | null {
+    const expression = dotCompositeFunctionCallExpression as {
+      functionCallExpression(): {
+        namedFunctionCallExpression():
+          | {
+              simpleNameReference(): { getText(): string };
+              argumentExpression(): Array<{
+                namedExpression(): { unnamedExpression(): UnnamedExpressionContext } | null;
+                starExpression(): unknown | null;
+              }>;
+            }
+          | null;
+        countExpression(): unknown | null;
+      };
+      dotCompositeFunctionCallOperation(): unknown[];
+    };
+
+    if (expression.dotCompositeFunctionCallOperation().length > 0) {
+      return null;
+    }
+
+    const functionCallExpression = expression.functionCallExpression();
+    if (functionCallExpression.countExpression()) {
+      return null;
+    }
+
+    const namedFunctionCall = functionCallExpression.namedFunctionCallExpression();
+    if (!namedFunctionCall) {
+      return null;
+    }
+
+    const argumentsExpressions = namedFunctionCall.argumentExpression().map((argumentExpression) => {
+      if (argumentExpression.starExpression()) {
+        throw new Error('Star arguments are not supported.');
+      }
+
+      const namedExpression = argumentExpression.namedExpression();
+      if (!namedExpression) {
+        throw new Error('Invalid function argument.');
+      }
+
+      return namedExpression.unnamedExpression();
+    });
+
+    return {
+      name: namedFunctionCall.simpleNameReference().getText(),
+      arguments: argumentsExpressions,
+    };
+  }
+
+  private evaluateBinFunction(value: KustoScalar, roundTo: KustoScalar): KustoScalar {
+    const numericValue = Number(value);
+    const numericRoundTo = Number(roundTo);
+    if (Number.isFinite(numericValue) && Number.isFinite(numericRoundTo) && numericRoundTo > 0) {
+      return Math.floor(numericValue / numericRoundTo) * numericRoundTo;
+    }
+
+    const date = this.toDate(value);
+    const stepMilliseconds = this.toTimespanMilliseconds(roundTo);
+    if (date && stepMilliseconds !== null && stepMilliseconds > 0) {
+      // Kusto datetime binning aligns with a fixed calendar anchor, not unix epoch.
+      const anchor = this.getDatetimeBinAnchorMilliseconds();
+      const delta = date.getTime() - anchor;
+      const binned = Math.floor(delta / stepMilliseconds) * stepMilliseconds + anchor;
+      return new Date(binned).toISOString();
+    }
+
+    return null;
+  }
+
+  private evaluateDatetimeAddFunction(period: KustoScalar, amount: KustoScalar, datetimeValue: KustoScalar): KustoScalar {
+    const periodText = String(period).toLowerCase();
+    const numericAmount = Number(amount);
+    const date = this.toDate(datetimeValue);
+    if (!Number.isFinite(numericAmount) || !date) {
+      return null;
+    }
+
+    const result = new Date(date.getTime());
+    if (periodText === 'day' || periodText === 'days') {
+      result.setUTCDate(result.getUTCDate() + numericAmount);
+      return result.toISOString();
+    }
+
+    if (periodText === 'hour' || periodText === 'hours') {
+      result.setUTCHours(result.getUTCHours() + numericAmount);
+      return result.toISOString();
+    }
+
+    if (periodText === 'minute' || periodText === 'minutes') {
+      result.setUTCMinutes(result.getUTCMinutes() + numericAmount);
+      return result.toISOString();
+    }
+
+    if (periodText === 'second' || periodText === 'seconds') {
+      result.setUTCSeconds(result.getUTCSeconds() + numericAmount);
+      return result.toISOString();
+    }
+
+    if (periodText === 'month' || periodText === 'months') {
+      result.setUTCMonth(result.getUTCMonth() + numericAmount);
+      return result.toISOString();
+    }
+
+    if (periodText === 'year' || periodText === 'years') {
+      result.setUTCFullYear(result.getUTCFullYear() + numericAmount);
+      return result.toISOString();
+    }
+
+    return null;
+  }
+
+  private evaluateDatetimeDiffFunction(period: KustoScalar, left: KustoScalar, right: KustoScalar): KustoScalar {
+    const periodText = String(period).toLowerCase();
+    const leftDate = this.toDate(left);
+    const rightDate = this.toDate(right);
+    if (!leftDate || !rightDate) {
+      return null;
+    }
+
+    if (periodText === 'year' || periodText === 'years') {
+      return leftDate.getUTCFullYear() - rightDate.getUTCFullYear();
+    }
+
+    if (periodText === 'month' || periodText === 'months') {
+      return ((leftDate.getUTCFullYear() - rightDate.getUTCFullYear()) * 12)
+        + (leftDate.getUTCMonth() - rightDate.getUTCMonth());
+    }
+
+    const millisecondsPerSecond = 1_000;
+    const millisecondsPerMinute = 60_000;
+    const millisecondsPerHour = 3_600_000;
+    const millisecondsPerDay = 86_400_000;
+    const deltaMilliseconds = leftDate.getTime() - rightDate.getTime();
+
+    if (periodText === 'day' || periodText === 'days') {
+      return Math.trunc(deltaMilliseconds / millisecondsPerDay);
+    }
+
+    if (periodText === 'hour' || periodText === 'hours') {
+      return Math.trunc(deltaMilliseconds / millisecondsPerHour);
+    }
+
+    if (periodText === 'minute' || periodText === 'minutes') {
+      return Math.trunc(deltaMilliseconds / millisecondsPerMinute);
+    }
+
+    if (periodText === 'second' || periodText === 'seconds') {
+      return Math.trunc(deltaMilliseconds / millisecondsPerSecond);
+    }
+
+    return null;
+  }
+
+  private evaluateRangeFunction(start: KustoScalar, stop: KustoScalar, step: KustoScalar): KustoScalar {
+    const startValue = Number(start);
+    const stopValue = Number(stop);
+    const stepValue = Number(step);
+    if (!Number.isFinite(startValue) || !Number.isFinite(stopValue) || !Number.isFinite(stepValue) || stepValue === 0) {
+      const startDate = this.toDate(start);
+      const stopDate = this.toDate(stop);
+      const stepMilliseconds = this.toTimespanMilliseconds(step);
+      if (!startDate || !stopDate || stepMilliseconds === null || stepMilliseconds === 0) {
+        return null;
+      }
+
+      const values: string[] = [];
+      if (stepMilliseconds > 0) {
+        for (let value = startDate.getTime(); value <= stopDate.getTime(); value += stepMilliseconds) {
+          values.push(new Date(value).toISOString());
+        }
+      } else {
+        for (let value = startDate.getTime(); value >= stopDate.getTime(); value += stepMilliseconds) {
+          values.push(new Date(value).toISOString());
+        }
+      }
+
+      return values as unknown as KustoScalar;
+    }
+
+    const values: number[] = [];
+    if (stepValue > 0) {
+      for (let value = startValue; value <= stopValue; value += stepValue) {
+        values.push(value);
+      }
+    } else {
+      for (let value = startValue; value >= stopValue; value += stepValue) {
+        values.push(value);
+      }
+    }
+
+    return values as unknown as KustoScalar;
+  }
+
+  private evaluateToDoubleFunction(value: KustoScalar): KustoScalar {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (typeof value === 'string' && value.trim().length === 0) {
+      return null;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private evaluateRoundFunction(value: KustoScalar, precisionValue?: KustoScalar): KustoScalar {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return null;
+    }
+
+    if (precisionValue === undefined) {
+      return Math.round(numericValue);
+    }
+
+    const numericPrecision = Number(precisionValue);
+    if (!Number.isFinite(numericPrecision)) {
+      return null;
+    }
+
+    const precision = Math.trunc(numericPrecision);
+    const factor = 10 ** precision;
+    if (!Number.isFinite(factor) || factor === 0) {
+      return null;
+    }
+
+    return Math.round(numericValue * factor) / factor;
+  }
+
+  private evaluateArrayLengthFunction(value: KustoScalar): KustoScalar {
+    if (Array.isArray(value)) {
+      return value.length;
+    }
+
+    return null;
+  }
+
+  private evaluateCaseFunction(argumentsValues: KustoScalar[]): KustoScalar {
+    for (let index = 0; index < argumentsValues.length - 1; index += 2) {
+      if (argumentsValues[index]) {
+        return argumentsValues[index + 1];
+      }
+    }
+
+    return argumentsValues[argumentsValues.length - 1];
+  }
+
+  private evaluateStartOfDayFunction(value: KustoScalar, offsetDaysValue?: KustoScalar): KustoScalar {
+    const date = this.toDate(value);
+    if (!date) {
+      return null;
+    }
+
+    const offsetDays = offsetDaysValue === undefined ? 0 : Number(offsetDaysValue);
+    if (!Number.isFinite(offsetDays)) {
+      return null;
+    }
+
+    const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    start.setUTCDate(start.getUTCDate() + Math.trunc(offsetDays));
+    return start.toISOString();
+  }
+
+  private evaluateDateComponentFunction(functionName: string, value: KustoScalar): KustoScalar {
+    const date = this.toDate(value);
+    if (!date) {
+      return null;
+    }
+
+    if (functionName === 'year') {
+      return date.getUTCFullYear();
+    }
+
+    if (functionName === 'month') {
+      return date.getUTCMonth() + 1;
+    }
+
+    if (functionName === 'day') {
+      return date.getUTCDate();
+    }
+
+    if (functionName === 'hour') {
+      return date.getUTCHours();
+    }
+
+    if (functionName === 'minute') {
+      return date.getUTCMinutes();
+    }
+
+    if (functionName === 'dayofweek') {
+      return date.getUTCDay();
+    }
+
+    return null;
+  }
+
+  private evaluateBinAtFunction(value: KustoScalar, binSize: KustoScalar, fixedPoint: KustoScalar): KustoScalar {
+    const numericValue = Number(value);
+    const numericBinSize = Number(binSize);
+    const numericFixedPoint = Number(fixedPoint);
+    if (
+      Number.isFinite(numericValue)
+      && Number.isFinite(numericBinSize)
+      && numericBinSize > 0
+      && Number.isFinite(numericFixedPoint)
+    ) {
+      const delta = numericValue - numericFixedPoint;
+      return Math.floor(delta / numericBinSize) * numericBinSize + numericFixedPoint;
+    }
+
+    const dateValue = this.toDate(value);
+    const fixedDate = this.toDate(fixedPoint);
+    const stepMilliseconds = this.toTimespanMilliseconds(binSize);
+    if (!dateValue || !fixedDate || stepMilliseconds === null || stepMilliseconds <= 0) {
+      return null;
+    }
+
+    const delta = dateValue.getTime() - fixedDate.getTime();
+    const binned = Math.floor(delta / stepMilliseconds) * stepMilliseconds + fixedDate.getTime();
+    return new Date(binned).toISOString();
+  }
+
+  private evaluateAdditiveOperation(left: KustoScalar, right: KustoScalar, isPlus: boolean): KustoScalar {
+    const leftDate = this.toDate(left);
+    const rightDate = this.toDate(right);
+    const leftTimespan = this.toTimespanMilliseconds(left);
+    const rightTimespan = this.toTimespanMilliseconds(right);
+
+    if (leftDate && rightTimespan !== null) {
+      const result = leftDate.getTime() + (isPlus ? rightTimespan : -rightTimespan);
+      return new Date(result).toISOString();
+    }
+
+    if (isPlus && rightDate && leftTimespan !== null) {
+      const result = rightDate.getTime() + leftTimespan;
+      return new Date(result).toISOString();
+    }
+
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+      return isPlus ? leftNumber + rightNumber : leftNumber - rightNumber;
+    }
+
+    return null;
+  }
+
+  private compareScalars(left: KustoScalar, right: KustoScalar): number {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+      if (leftNumber === rightNumber) {
+        return 0;
+      }
+
+      return leftNumber < rightNumber ? -1 : 1;
+    }
+
+    const leftDate = this.toDate(left);
+    const rightDate = this.toDate(right);
+    if (leftDate && rightDate) {
+      const leftTime = leftDate.getTime();
+      const rightTime = rightDate.getTime();
+      if (leftTime === rightTime) {
+        return 0;
+      }
+
+      return leftTime < rightTime ? -1 : 1;
+    }
+
+    return this.options.compareValues(left, right);
+  }
+
+  private toDate(value: KustoScalar): Date | null {
+    if (value instanceof Date) {
+      return value;
+    }
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const datetimeText = this.normalizeDatetimeText(this.extractDatetimeLiteralText(value));
+    const parsed = new Date(datetimeText);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+
+    return parsed;
+  }
+
+  private extractDatetimeLiteralText(value: string): string {
+    const trimmed = value.trim();
+    const lower = trimmed.toLowerCase();
+    if (!lower.startsWith('datetime(') || !trimmed.endsWith(')')) {
+      return trimmed;
+    }
+
+    return trimmed.slice(9, -1).trim();
+  }
+
+  private normalizeDatetimeText(value: string): string {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return trimmed;
+    }
+
+    // Kusto datetime literals without timezone are UTC.
+    const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
+    if (hasTimezone) {
+      return trimmed;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return `${trimmed}T00:00:00Z`;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(trimmed)) {
+      return `${trimmed.replace(' ', 'T')}Z`;
+    }
+
+    return trimmed;
+  }
+
+  private toTimespanMilliseconds(value: KustoScalar): number | null {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null;
+    }
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed.length < 2) {
+      return null;
+    }
+
+    const unit = trimmed.slice(-1).toLowerCase();
+    const amount = Number(trimmed.slice(0, -1));
+    if (!Number.isFinite(amount)) {
+      return null;
+    }
+
+    if (unit === 's') {
+      return amount * 1_000;
+    }
+
+    if (unit === 'm') {
+      return amount * 60_000;
+    }
+
+    if (unit === 'h') {
+      return amount * 3_600_000;
+    }
+
+    if (unit === 'd') {
+      return amount * 86_400_000;
+    }
+
+    return null;
+  }
+
+  private coerceDynamicContainer(value: unknown): unknown {
+    if (typeof value !== 'string') {
+      return value;
+    }
+
+    const trimmed = value.trim();
+    const dynamicMatch = trimmed.match(/^dynamic\((.*)\)$/s);
+    const candidate = dynamicMatch ? dynamicMatch[1].trim() : trimmed;
+
+    if (!(candidate.startsWith('{') || candidate.startsWith('['))) {
+      return value;
+    }
+
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      return value;
+    }
+  }
+
+  private getDatetimeBinAnchorMilliseconds(): number {
+    const anchor = new Date(0);
+    anchor.setUTCFullYear(1, 0, 1);
+    anchor.setUTCHours(0, 0, 0, 0);
+    return anchor.getTime();
+  }
+}

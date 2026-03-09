@@ -1,0 +1,5 @@
+StormEvents
+| where DeathsDirect > 0 or DeathsIndirect > 0
+| summarize StormTypesWithDeaths = make_set(EventType) by State
+| project State, StormTypesWithDeaths
+| sort by array_length(StormTypesWithDeaths), State

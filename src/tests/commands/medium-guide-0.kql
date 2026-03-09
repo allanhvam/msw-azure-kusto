@@ -1,0 +1,12 @@
+// https://medium.com/@danushidk507/comprehensive-guide-to-kusto-query-language-kql-from-beginner-to-advanced-8dff3bd7568e
+
+datatable(State:string, EventType:string, DamageProperty:long)
+[
+  "California", "Flood", 1500000,
+  "Texas", "Hail", 500000,
+  "Florida", "Flood", 900000,
+  "California", "Wildfire", 2500000
+]
+| where State == "California"
+| project EventType, State, DamageProperty
+| order by DamageProperty desc

@@ -1,0 +1,8 @@
+StormEvents
+| summarize 
+    TotalStormsInState = count(),
+    StormsWithCropDamage = countif(DamageCrops > 0)
+    by State
+| extend PercentWithCropDamage = 
+    round((todouble(StormsWithCropDamage) / TotalStormsInState * 100), 2)
+| sort by StormsWithCropDamage, State

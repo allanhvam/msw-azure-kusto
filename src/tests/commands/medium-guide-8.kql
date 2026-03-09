@@ -1,0 +1,12 @@
+// materialize intermediate results
+let FilteredData = materialize(
+  datatable(State:string, DamageProperty:long)
+  [
+    "California", 1500000,
+    "California", 500000,
+    "Texas", 250000
+  ]
+  | where State == "California"
+);
+FilteredData
+| summarize TotalDamage = sum(DamageProperty), AverageDamage = avg(DamageProperty)
