@@ -1863,7 +1863,13 @@ export class KustoInterpreter {
   }
 
   private createPrintRows(expressions: NamedExpressionAst[]): KustoRow[] {
-    return this.applyProjectAst([{}], expressions);
+    // Kusto assigns deterministic names for unnamed print expressions.
+    const normalizedExpressions = expressions.map((expression, index) => ({
+      ...expression,
+      alias: expression.alias ?? `print_${index}`,
+    }));
+
+    return this.applyProjectAst([{}], normalizedExpressions);
   }
 
   private evaluateUnnamedExpression(unnamedExpression: UnnamedExpressionContext, row: KustoRow): KustoScalar {

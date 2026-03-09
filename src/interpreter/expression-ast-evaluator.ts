@@ -654,6 +654,14 @@ export class ExpressionAstEvaluator {
       return this.evaluateDatetimeAddFunction(argumentsValues[0], argumentsValues[1], argumentsValues[2]);
     }
 
+    if (functionName === 'datetime_diff') {
+      if (argumentsValues.length !== 3) {
+        throw new Error('datetime_diff() expects exactly three arguments.');
+      }
+
+      return this.evaluateDatetimeDiffFunction(argumentsValues[0], argumentsValues[1], argumentsValues[2]);
+    }
+
     if (functionName === 'not') {
       if (argumentsValues.length !== 1) {
         throw new Error('not() expects exactly one argument.');
@@ -1239,6 +1247,48 @@ export class ExpressionAstEvaluator {
     if (periodText === 'year' || periodText === 'years') {
       result.setUTCFullYear(result.getUTCFullYear() + numericAmount);
       return result.toISOString();
+    }
+
+    return null;
+  }
+
+  private evaluateDatetimeDiffFunction(period: KustoScalar, left: KustoScalar, right: KustoScalar): KustoScalar {
+    const periodText = String(period).toLowerCase();
+    const leftDate = this.toDate(left);
+    const rightDate = this.toDate(right);
+    if (!leftDate || !rightDate) {
+      return null;
+    }
+
+    if (periodText === 'year' || periodText === 'years') {
+      return leftDate.getUTCFullYear() - rightDate.getUTCFullYear();
+    }
+
+    if (periodText === 'month' || periodText === 'months') {
+      return ((leftDate.getUTCFullYear() - rightDate.getUTCFullYear()) * 12)
+        + (leftDate.getUTCMonth() - rightDate.getUTCMonth());
+    }
+
+    const millisecondsPerSecond = 1_000;
+    const millisecondsPerMinute = 60_000;
+    const millisecondsPerHour = 3_600_000;
+    const millisecondsPerDay = 86_400_000;
+    const deltaMilliseconds = leftDate.getTime() - rightDate.getTime();
+
+    if (periodText === 'day' || periodText === 'days') {
+      return Math.trunc(deltaMilliseconds / millisecondsPerDay);
+    }
+
+    if (periodText === 'hour' || periodText === 'hours') {
+      return Math.trunc(deltaMilliseconds / millisecondsPerHour);
+    }
+
+    if (periodText === 'minute' || periodText === 'minutes') {
+      return Math.trunc(deltaMilliseconds / millisecondsPerMinute);
+    }
+
+    if (periodText === 'second' || periodText === 'seconds') {
+      return Math.trunc(deltaMilliseconds / millisecondsPerSecond);
     }
 
     return null;
