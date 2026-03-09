@@ -1,0 +1,6 @@
+StormEvents
+| where StartTime between (datetime(2007-08-01 00:00:00) .. datetime(2007-08-30 23:59:59))
+| project EventId, State, EventType, StartTime, EndTime
+| sort by StartTime asc, EventId asc
+| project-away EventId
+| take 20

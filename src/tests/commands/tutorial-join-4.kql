@@ -1,0 +1,5 @@
+StormEvents
+| summarize PropertyDamage = sum(DamageProperty) by State
+| join kind=innerunique PopulationData on State
+| project State, PropertyDamagePerCapita = PropertyDamage / Population
+| sort by PropertyDamagePerCapita, State

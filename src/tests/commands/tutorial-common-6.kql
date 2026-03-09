@@ -1,0 +1,5 @@
+StormEvents
+| where State == 'TEXAS' and EventType == 'Flood'
+| sort by DamageProperty, EventId
+| project StartTime, EndTime, State, EventType, DamageProperty
+| take 20

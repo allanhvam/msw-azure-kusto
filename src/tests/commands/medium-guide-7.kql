@@ -1,0 +1,10 @@
+// mv-expand arrays
+datatable(EventId:int, Tags:dynamic)
+[
+  1, dynamic(["flood", "urgent"]),
+  2, dynamic(["hail"]),
+  3, dynamic(["flood", "coastal"])
+]
+| mv-expand Tag = Tags
+| project EventId, Tag = tostring(Tag)
+| order by EventId asc, Tag asc

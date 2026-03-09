@@ -1,0 +1,8 @@
+StormEvents
+| where DamageCrops > 0
+| summarize
+    MaxCropDamage=max(DamageCrops), 
+    MinCropDamage=min(DamageCrops), 
+    AvgCropDamage=avg(DamageCrops)
+    by EventType
+| sort by AvgCropDamage

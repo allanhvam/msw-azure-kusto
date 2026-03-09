@@ -1,0 +1,18 @@
+// inner join
+let StormEvents = datatable(EventId:int, State:string, DamageProperty:long)
+[
+  1, "California", 1500000,
+  2, "Texas", 500000,
+  3, "Florida", 900000
+];
+let StateDetails = datatable(State:string, Region:string)
+[
+  "California", "West",
+  "Texas", "South",
+  "Florida", "South",
+  "Ohio", "Midwest"
+];
+StormEvents
+| join kind=inner (StateDetails) on State
+| project EventId, State, Region, DamageProperty
+| order by EventId asc

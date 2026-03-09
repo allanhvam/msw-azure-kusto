@@ -1,0 +1,5 @@
+StormEvents
+| where State == 'TEXAS' and EventType == 'Flood'
+| sort by DamageProperty desc, EventId asc
+| take 5
+| extend Duration = EndTime - StartTime

@@ -1,0 +1,2 @@
+.ingest inline into table AppTraces with (format = "json", ingestionMappingReference = "JsonMapping") <|
+{"AppRoleInstance":"Mac.localdomain","AppRoleName":"app","IKey":"00000000-0000-0000-0000-000000000000","Measurements":{},"Message":"8ne1_dRFxfpc1bERP748_","Properties":{"workflow":"test-logger-emit 9w6sShd_DE5QqHkeqnoFp"},"SDKVersion":"node22:otel2.0.0:ext1.0.0-beta.32","SeverityLevel":2,"TimeGenerated":"2026-03-09T13:19:24.615Z","Type":"Microsoft.ApplicationInsights.Message"}

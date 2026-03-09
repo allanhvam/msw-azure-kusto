@@ -1,0 +1,10 @@
+StormEvents
+| where EventType == "Lightning"
+| distinct State
+| join kind=inner (
+    StormEvents 
+    | where EventType == "Avalanche"
+    | distinct State
+    )
+    on State
+| project State

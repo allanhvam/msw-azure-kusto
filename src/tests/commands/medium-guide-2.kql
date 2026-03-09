@@ -1,0 +1,11 @@
+// in + notin filtering
+datatable(State:string, EventType:string, DamageProperty:long)
+[
+  "California", "Flood", 1500000,
+  "Texas", "Hail", 500000,
+  "Florida", "Flood", 900000,
+  "Nevada", "Heat", 100000
+]
+| where State in ("California", "Texas", "Florida")
+| where EventType !in ("Heat")
+| order by State asc

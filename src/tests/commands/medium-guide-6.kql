@@ -1,0 +1,11 @@
+// parse_json + project nested values
+datatable(EventId:int, EventJson:string)
+[
+  1, '{"Type":"Flood","Severity":"High"}',
+  2, '{"Type":"Hail","Severity":"Low"}',
+  3, '{"Type":"Flood","Severity":"Medium"}'
+]
+| extend Parsed = parse_json(EventJson)
+| project EventId, EventType = tostring(Parsed.Type), Severity = tostring(Parsed.Severity)
+| where EventType == "Flood"
+| order by EventId asc

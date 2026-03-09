@@ -1,0 +1,3 @@
+StormEvents
+| take 5
+| project State, EventType, DamageProperty

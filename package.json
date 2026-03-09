@@ -1,0 +1,64 @@
+{
+  "name": "msw-azure-kusto",
+  "version": "1.0.0",
+  "description": "TypeScript Azure Data Explorer (Kusto) HTTP emulator for local testing with MSW.",
+  "keywords": [
+    "kusto",
+    "azure-data-explorer",
+    "msw",
+    "mocking",
+    "testing",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/allanhvam/msw-azure-kusto.git"
+  },
+  "author": "Allan Hvam",
+  "license": "ISC",
+  "private": false,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "!dist/**/demo.*",
+    "!dist/**/*.map",
+    "!dist/tests/**",
+    "!dist/tools/**"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "download:grammar": "npm run build && node dist/tools/download-grammar-files.js",
+    "generate:parser": "antlr-ng -o src/parser --lib src/grammar -Dlanguage=TypeScript --generate-visitor=true src/grammar/Kql.g4",
+    "lint": "eslint .",
+    "test": "node --env-file-if-exists=.env --test dist/tests/*.test.js",
+    "test-update-snapshots": "node --env-file-if-exists=.env  --test-update-snapshots dist/tests/commands.test.js",
+    "demo": "node dist/demo.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@stylistic/eslint-plugin": "^5.9.0",
+    "@types/node": "^22.13.11",
+    "antlr-ng": "^1.0.10",
+    "azure-kusto-data": "^7.0.4",
+    "eslint": "^10.0.2",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.56.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "antlr4ng": "^3.0.16",
+    "msw": "^2.12.10",
+    "zod": "^4.3.6"
+  }
+}

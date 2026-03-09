@@ -1,0 +1,4 @@
+let TotalStorms = toscalar(StormEvents | summarize count());
+StormEvents
+| summarize EventCount = count() by EventType
+| project EventType, EventCount, Percentage = todouble(EventCount) / TotalStorms * 100.0

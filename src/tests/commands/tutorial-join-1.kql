@@ -1,0 +1,1 @@
+.ingest into table StormEvents ('https://kustosamples.blob.core.windows.net/samplefiles/StormEvents.csv') with (format='csv', ignoreFirstRecord=true)

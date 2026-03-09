@@ -1,0 +1,3 @@
+StormEvents
+| where State == 'TEXAS' and EventType == 'Flood'
+| project StartTime, EndTime, State, EventType, DamageProperty

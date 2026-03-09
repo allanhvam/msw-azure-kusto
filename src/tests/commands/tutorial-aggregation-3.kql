@@ -1,0 +1,3 @@
+StormEvents
+| summarize StormsWithCropDamage = countif(DamageCrops > 0) by State
+| top 5 by StormsWithCropDamage
