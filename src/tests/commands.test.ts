@@ -3,7 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { snapshot } from 'node:test';
 import type { KustoResponseDataSet } from 'azure-kusto-data';
-import { Client } from 'azure-kusto-data';
+import { Client, ClientRequestProperties } from 'azure-kusto-data';
 import { getKcsb } from './get-kcsb.js';
 
 type Command = {
@@ -42,6 +42,10 @@ function serializeForSnapshot(value: unknown): unknown {
 
       if (key === 'Duration') {
         return [key, 0] as const;
+      }
+
+      if (key === 'LastUpdatedOn') {
+        return [key, new Date(0,0,0)] as const;        
       }
 
       return [key, serializeForSnapshot(itemValue)] as const;
@@ -191,7 +195,28 @@ for (const command of commands) {
   });
 }
 
-// test(`command - print`, async (t) => {
-//     const results = await execute("print");
-//     t.assert.snapshot(results);
-//   });
+test(`sdk query parameters`, async (t) => {
+  const update = process.argv.includes('--test-update-snapshots') || process.execArgv.includes('--test-update-snapshots');
+  const useMock = !update;
+  const { kcsb, close } = getKcsb(useMock);
+  console.dir(kcsb);
+  const client = new Client(kcsb);
+  const db = 'Test';
+
+  try {
+    const query = `declare query_parameters(birthday:datetime); print strcat("Your age is: ", datetime_diff('year',now(), birthday))`;
+
+    const crp = new ClientRequestProperties();
+    crp.setParameter('birthday', 'datetime(1970-05-11)');
+
+    const response = await client.executeQuery(db, query, crp);
+    const primary = response.primaryResults[0];
+    assert.ok(primary);
+
+    const data = primary.toJSON();
+    t.assert.snapshot(serializeForSnapshot(data.data));
+  } finally {
+    client.close();
+    close?.();
+  }
+});

@@ -115,3 +115,16 @@ test('parses ingest from uri command with with-clause', () => {
   assert.ok(top.query());
   assert.equal(parser.numberOfSyntaxErrors, 0);
 });
+
+test('parses declare query_parameters statement with defaults', () => {
+  const query =
+    'declare query_parameters(startDate:datetime, eventType:string = "Flood", maxRows:long = 5); StormEvents | where StartTime >= startDate and EventType == eventType | take maxRows';
+
+  const lexer = new KqlLexer(antlr.CharStream.fromString(query));
+  const tokens = new antlr.CommonTokenStream(lexer);
+  const parser = new KqlParser(tokens);
+  const top = parser.top();
+
+  assert.ok(top.query());
+  assert.equal(parser.numberOfSyntaxErrors, 0);
+});

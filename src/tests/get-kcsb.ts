@@ -11,6 +11,8 @@ export type KcsbContext = {
   close?: () => void;
 };
 
+const DEFAULT_MOCK_CLUSTER = 'https://mock.kusto.windows.net';
+
 async function getAzureCliAccessToken(resource: string): Promise<string> {
   const { stdout } = await execFileAsync('az', [
     'account',
@@ -29,7 +31,13 @@ async function getAzureCliAccessToken(resource: string): Promise<string> {
   return parsed.accessToken;
 }
 
-export function getKcsb(useMock: boolean, cluster = process.env.CLUSTER ?? ""): KcsbContext {
+export function getKcsb(useMock: boolean, cluster = process.env.CLUSTER ?? ''): KcsbContext {
+  cluster = useMock ? (cluster || DEFAULT_MOCK_CLUSTER) : cluster;
+
+  if (!useMock && cluster.length === 0) {
+    throw new Error('CLUSTER must be set when running tests against a real Kusto endpoint.');
+  }
+
   if (useMock) {
     const server = setupServer(...handlers());
     server.listen();

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KqlLexer } from '../parser/KqlLexer.js';
 import {
+  type DeclareQueryParametersStatementContext,
   KqlParser,
   type DataTableExpressionContext,
   type EntityExpressionContext,
@@ -40,6 +41,10 @@ export type { KustoExecutionResult, KustoRow, KustoScalar } from './types.js';
 
 export type KustoInterpreterOptions = {
   databaseName?: string;
+};
+
+export type KustoExecuteOptions = {
+  queryParameters?: Record<string, unknown>;
 };
 
 export class KustoInterpreter {
@@ -169,7 +174,7 @@ export class KustoInterpreter {
     }
   }
 
-  public async execute(text: string): Promise<KustoExecutionResult> {
+  public async execute(text: string, options: KustoExecuteOptions = {}): Promise<KustoExecutionResult> {
     const startedAt = Date.now();
     const command = text.trim();
     const lexer = new KqlLexer(antlr.CharStream.fromString(command));
@@ -188,7 +193,7 @@ export class KustoInterpreter {
       return this.decorateExecuteResult(ast, result, startedAt);
     }
 
-    return this.executeScriptStatements(statements, startedAt, command);
+      return this.executeScriptStatements(statements, startedAt, command, options);
   }
 
   private async executeCommandAst(ast: CommandAst): Promise<KustoExecutionResult> {
@@ -209,12 +214,19 @@ export class KustoInterpreter {
     statements: StatementContext[],
     startedAt: number,
     rawCommand: string,
+    options: KustoExecuteOptions,
   ): Promise<KustoExecutionResult> {
-    const letBindings: KustoRow = {};
+    const letBindings: KustoRow = this.normalizeQueryParameters(options.queryParameters);
     const letTableBindings = new Map<string, KustoRow[]>();
     let finalCommandAst: CommandAst | null = null;
 
     for (const statement of statements) {
+      const declareQueryParametersStatement = statement.declareQueryParametersStatement();
+      if (declareQueryParametersStatement) {
+        this.executeDeclareQueryParametersStatement(declareQueryParametersStatement, letBindings);
+        continue;
+      }
+
       const letStatement = statement.letStatement();
       if (letStatement) {
         this.executeLetStatement(letStatement, letBindings, letTableBindings);
@@ -229,7 +241,7 @@ export class KustoInterpreter {
 
       const queryStatement = statement.queryStatement();
       if (!queryStatement) {
-        throw new Error('Only let, set, and query statements are supported.');
+        throw new Error('Only declare query_parameters, let, set, and query statements are supported.');
       }
 
       if (finalCommandAst !== null) {
@@ -261,6 +273,43 @@ export class KustoInterpreter {
       this.currentLetBindings = previousBindings;
       this.currentLetTableBindings = previousTableBindings;
     }
+  }
+
+  private executeDeclareQueryParametersStatement(
+    declareStatement: DeclareQueryParametersStatementContext,
+    letBindings: KustoRow,
+  ): void {
+    for (const parameter of declareStatement.declareQueryParametersStatementParameter()) {
+      const parameterName = parameter.parameterName().getText();
+      if (Object.hasOwn(letBindings, parameterName)) {
+        continue;
+      }
+
+      const defaultValue = parameter.scalarParameterDefault()?.literalExpression();
+      if (!defaultValue) {
+        continue;
+      }
+
+      letBindings[parameterName] = this.parseScalar(defaultValue.getText());
+    }
+  }
+
+  private normalizeQueryParameters(parameters?: Record<string, unknown>): KustoRow {
+    if (!parameters) {
+      return {};
+    }
+
+    const bindings: KustoRow = {};
+    for (const [key, value] of Object.entries(parameters)) {
+      if (typeof value === 'string') {
+        bindings[key] = this.parseScalar(value);
+        continue;
+      }
+
+      bindings[key] = this.normalizeScalar(value);
+    }
+
+    return bindings;
   }
 
   private decorateExecuteResult(

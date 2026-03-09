@@ -28,7 +28,7 @@ exports[`command - apptrace 3`] = `
     "Name": "JsonMapping",
     "Kind": "Json",
     "Mapping": "[{\\"column\\":\\"AppRoleInstance\\",\\"path\\":\\"$.AppRoleInstance\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"AppRoleName\\",\\"path\\":\\"$.AppRoleName\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"AppVersion\\",\\"path\\":\\"$.AppVersion\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"_BilledSize\\",\\"path\\":\\"$._BilledSize\\",\\"datatype\\":\\"real\\"},{\\"column\\":\\"ClientBrowser\\",\\"path\\":\\"$.ClientBrowser\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ClientCity\\",\\"path\\":\\"$.ClientCity\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ClientCountryOrRegion\\",\\"path\\":\\"$.ClientCountryOrRegion\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ClientIP\\",\\"path\\":\\"$.ClientIP\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ClientModel\\",\\"path\\":\\"$.ClientModel\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ClientOS\\",\\"path\\":\\"$.ClientOS\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ClientStateOrProvince\\",\\"path\\":\\"$.ClientStateOrProvince\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ClientType\\",\\"path\\":\\"$.ClientType\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"IKey\\",\\"path\\":\\"$.IKey\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"_IsBillable\\",\\"path\\":\\"$._IsBillable\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ItemCount\\",\\"path\\":\\"$.ItemCount\\",\\"datatype\\":\\"real\\"},{\\"column\\":\\"Measurements\\",\\"path\\":\\"$.Measurements\\",\\"datatype\\":\\"dynamic\\"},{\\"column\\":\\"Message\\",\\"path\\":\\"$.Message\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"OperationId\\",\\"path\\":\\"$.OperationId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"OperationName\\",\\"path\\":\\"$.OperationName\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ParentId\\",\\"path\\":\\"$.ParentId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"Properties\\",\\"path\\":\\"$.Properties\\",\\"datatype\\":\\"dynamic\\"},{\\"column\\":\\"ReferencedItemId\\",\\"path\\":\\"$.ReferencedItemId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ReferencedType\\",\\"path\\":\\"$.ReferencedType\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"ResourceGUID\\",\\"path\\":\\"$.ResourceGUID\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"_ResourceId\\",\\"path\\":\\"$._ResourceId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"SDKVersion\\",\\"path\\":\\"$.SDKVersion\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"SessionId\\",\\"path\\":\\"$.SessionId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"SeverityLevel\\",\\"path\\":\\"$.SeverityLevel\\",\\"datatype\\":\\"real\\"},{\\"column\\":\\"SourceSystem\\",\\"path\\":\\"$.SourceSystem\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"_SubscriptionId\\",\\"path\\":\\"$._SubscriptionId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"SyntheticSource\\",\\"path\\":\\"$.SyntheticSource\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"TenantId\\",\\"path\\":\\"$.TenantId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"TimeGenerated\\",\\"path\\":\\"$.TimeGenerated\\",\\"datatype\\":\\"dynamic\\"},{\\"column\\":\\"Type\\",\\"path\\":\\"$.Type\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"UserAccountId\\",\\"path\\":\\"$.UserAccountId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"UserAuthenticatedId\\",\\"path\\":\\"$.UserAuthenticatedId\\",\\"datatype\\":\\"string\\"},{\\"column\\":\\"UserId\\",\\"path\\":\\"$.UserId\\",\\"datatype\\":\\"string\\"}]",
-    "LastUpdatedOn": "2026-03-09T13:24:20.320Z",
+    "LastUpdatedOn": "1899-12-30T23:00:00.000Z",
     "Database": "Test",
     "Table": "AppTraces"
   }
@@ -5035,4 +5035,12 @@ exports[`command - tutorial-join 7`] = `
 
 exports[`command - tutorial-join 8`] = `
 []
+`;
+
+exports[`sdk query parameters 1`] = `
+[
+  {
+    "print_0": "Your age is: 56"
+  }
+]
 `;

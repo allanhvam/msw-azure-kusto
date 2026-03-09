@@ -18,6 +18,32 @@ const managementRequestSchema = z.object({
 const acceptedDomains = ['*.kusto.windows.net', 'kusto.local'];
 const wildcardPrefix = '*.';
 
+function toQueryParameters(properties: unknown): Record<string, unknown> | undefined {
+  if (properties === null || properties === undefined) {
+    return undefined;
+  }
+
+  let parsedProperties: unknown = properties;
+  if (typeof parsedProperties === 'string') {
+    try {
+      parsedProperties = JSON.parse(parsedProperties) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (typeof parsedProperties !== 'object' || parsedProperties === null) {
+    return undefined;
+  }
+
+  const maybeParameters = (parsedProperties as { Parameters?: unknown }).Parameters;
+  if (typeof maybeParameters !== 'object' || maybeParameters === null || Array.isArray(maybeParameters)) {
+    return undefined;
+  }
+
+  return maybeParameters as Record<string, unknown>;
+}
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -169,7 +195,9 @@ export function handlers(): Array<ReturnType<typeof http.get> | ReturnType<typeo
 
     try {
       return {
-        result: await getInterpreter(parsed.data.db).execute(parsed.data.csl),
+        result: await getInterpreter(parsed.data.db).execute(parsed.data.csl, {
+          queryParameters: toQueryParameters(parsed.data.properties),
+        }),
       };
     } catch (error) {
       return {
@@ -206,7 +234,9 @@ export function handlers(): Array<ReturnType<typeof http.get> | ReturnType<typeo
 
     try {
       const interpreter = getInterpreter(parsed.data.db);
-      const result = await interpreter.execute(parsed.data.csl);
+      const result = await interpreter.execute(parsed.data.csl, {
+        queryParameters: toQueryParameters(parsed.data.properties),
+      });
 
       return HttpResponse.json(toQueryV1Response(result));
     } catch (error) {
