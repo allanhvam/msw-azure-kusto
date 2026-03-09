@@ -2,7 +2,7 @@
 
 TypeScript Azure Data Explorer (Kusto) HTTP emulator for local testing with MSW.
 
-> Disclaimer: Primarily coded by Codex and Opus, this emulator is not feature complete.
+> Disclaimer: Primarily coded by Codex and Opus, this emulator is not feature complete. Only inline ingestion and URI-based CSV ingestion.
 
 ## Usage
 
