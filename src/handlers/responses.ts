@@ -45,9 +45,14 @@ function toDataType(columnType: string): string {
   return dataTypeMap[columnType] ?? columnType;
 }
 
-export function toKustoTable(name: string, rows: KustoRow[], columnTypes?: Record<string, string>): {
+export function toKustoTable(
+  name: string,
+  rows: KustoRow[],
+  columnTypes?: Record<string, string>,
+  addDataType = true,
+): {
   TableName: string;
-  Columns: Array<{ ColumnName: string; DataType: string; ColumnType: string }>;
+  Columns: Array<{ ColumnName: string; DataType?: string; ColumnType: string }>;
   Rows: unknown[][];
 } {
   const columnNames = rows.length > 0
@@ -57,9 +62,16 @@ export function toKustoTable(name: string, rows: KustoRow[], columnTypes?: Recor
   const columns = columnNames.map((columnName) => {
     const dataType = columnTypes?.[columnName] ?? typeForValue(rows.find((row) => row[columnName] !== undefined)?.[columnName]);
 
+    if (addDataType) {
     return {
       ColumnName: columnName,
-      DataType: toDataType(dataType),
+    DataType: toDataType(dataType),
+      ColumnType: dataType,
+    };
+
+    }
+    return {
+      ColumnName: columnName,
       ColumnType: dataType,
     };
   });
@@ -80,7 +92,8 @@ export function toQueryV1Response(result: KustoExecutionResult): { Tables: Array
 }
 
 export function toQueryV2Response(result: KustoExecutionResult): Array<
-  | { FrameType: 'DataSetHeader'; IsProgressive: false; Version: 'v2.0' }
+  | { FrameType: 'DataSetHeader'; IsProgressive: false; Version: 'v2.0', ErrorReportingPlacement: string, IsFragmented: boolean }
+  | ({ FrameType: 'DataTable'; TableId: number; TableKind: string; TableName: string; Columns: Array<{ ColumnName: string; ColumnType: string }>; Rows: unknown[][] })
   | ({ FrameType: 'DataTable'; TableId: number; TableKind: 'PrimaryResult' } & ReturnType<typeof toKustoTable>)
   | { FrameType: 'DataSetCompletion'; HasErrors: false; Cancelled: false }
 > {
@@ -89,12 +102,32 @@ export function toQueryV2Response(result: KustoExecutionResult): Array<
       FrameType: 'DataSetHeader',
       IsProgressive: false,
       Version: 'v2.0',
+      ErrorReportingPlacement: "InData",
+      IsFragmented: false,
+    },
+    {
+      FrameType: 'DataTable',
+      TableId: 0,
+      TableKind: 'QueryProperties',
+      TableName: '@ExtendedProperties',
+      Columns: [
+        { ColumnName: 'TableId', ColumnType: 'int' },
+        { ColumnName: 'Key', ColumnType: 'string' },
+        { ColumnName: 'Value', ColumnType: 'dynamic' },
+      ],
+      Rows: [
+        [
+          1,
+          'Visualization',
+          '{"Visualization":null,"Title":null,"XColumn":null,"Series":null,"YColumns":null,"AnomalyColumns":null,"XTitle":null,"YTitle":null,"XAxis":null,"YAxis":null,"Legend":null,"YSplit":null,"Accumulate":false,"IsQuerySorted":true,"Kind":null,"Ymin":"NaN","Ymax":"NaN","Xmin":null,"Xmax":null}',
+        ],
+      ],
     },
     {
       FrameType: 'DataTable',
       TableId: 0,
       TableKind: 'PrimaryResult',
-      ...toKustoTable('Table_0', result.rows, result.columnTypes),
+      ...toKustoTable('PrimaryResult', result.rows, result.columnTypes, false),
     },
     {
       FrameType: 'DataSetCompletion',

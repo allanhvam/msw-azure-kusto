@@ -3,7 +3,7 @@ import test from "node:test";
 import { setupServer } from "msw/node";
 import { handlers } from "../handlers.js";
 
-test.skip("rest sensor readings", async () => {
+test("rest sensor readings", async () => {
   const server = setupServer(...handlers());
   server.listen();
 
@@ -269,33 +269,33 @@ test.skip("rest sensor readings", async () => {
         IsFragmented: false,
         ErrorReportingPlacement: "InData",
       },
-      // {
-      //   FrameType: "DataTable",
-      //   TableId: 0,
-      //   TableKind: "QueryProperties",
-      //   TableName: "@ExtendedProperties",
-      //   Columns: [
-      //     {
-      //       ColumnName: "TableId",
-      //       ColumnType: "int",
-      //     },
-      //     {
-      //       ColumnName: "Key",
-      //       ColumnType: "string",
-      //     },
-      //     {
-      //       ColumnName: "Value",
-      //       ColumnType: "dynamic",
-      //     },
-      //   ],
-      //   Rows: [
-      //     [
-      //       1,
-      //       "Visualization",
-      //       '{"Visualization":null,"Title":null,"XColumn":null,"Series":null,"YColumns":null,"AnomalyColumns":null,"XTitle":null,"YTitle":null,"XAxis":null,"YAxis":null,"Legend":null,"YSplit":null,"Accumulate":false,"IsQuerySorted":true,"Kind":null,"Ymin":"NaN","Ymax":"NaN","Xmin":null,"Xmax":null}',
-      //     ],
-      //   ],
-      // },
+      {
+        FrameType: "DataTable",
+        TableId: 0,
+        TableKind: "QueryProperties",
+        TableName: "@ExtendedProperties",
+        Columns: [
+          {
+            ColumnName: "TableId",
+            ColumnType: "int",
+          },
+          {
+            ColumnName: "Key",
+            ColumnType: "string",
+          },
+          {
+            ColumnName: "Value",
+            ColumnType: "dynamic",
+          },
+        ],
+        Rows: [
+          [
+            1,
+            "Visualization",
+            '{"Visualization":null,"Title":null,"XColumn":null,"Series":null,"YColumns":null,"AnomalyColumns":null,"XTitle":null,"YTitle":null,"XAxis":null,"YAxis":null,"Legend":null,"YSplit":null,"Accumulate":false,"IsQuerySorted":true,"Kind":null,"Ymin":"NaN","Ymax":"NaN","Xmin":null,"Xmax":null}',
+          ],
+        ],
+      },
       {
         FrameType: "DataTable",
         TableId: 0, // Was 1

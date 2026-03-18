@@ -135,8 +135,8 @@ test('kusto handler returns dynamic values as objects', async () => {
     const primaryDataTable = json.find((frame) => frame.FrameType === 'DataTable' && frame.TableKind === 'PrimaryResult');
     assert.ok(primaryDataTable);
     assert.deepEqual(primaryDataTable.Columns, [
-      { ColumnName: 'Id', DataType: 'Int32', ColumnType: 'int' },
-      { ColumnName: 'Payload', DataType: 'Object', ColumnType: 'dynamic' },
+      { ColumnName: 'Id', ColumnType: 'int' },
+      { ColumnName: 'Payload', ColumnType: 'dynamic' },
     ]);
     assert.deepEqual(primaryDataTable.Rows, [[1, { foo: 'bar' }]]);
   } finally {
