@@ -45,6 +45,18 @@ function toDataType(columnType: string): string {
   return dataTypeMap[columnType] ?? columnType;
 }
 
+function toIsoWithoutMilliseconds(value: unknown): unknown {
+  if (value instanceof Date) {
+    return value.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+
+  if (typeof value === 'string') {
+    return value.replace(/\.\d+Z$/, 'Z');
+  }
+
+  return value;
+}
+
 export function toKustoTable(
   name: string,
   rows: KustoRow[],
@@ -76,7 +88,16 @@ export function toKustoTable(
     };
   });
 
-  const serializedRows = rows.map((row) => columnNames.map((columnName) => row[columnName]));
+  const serializedRows = rows.map((row) => columnNames.map((columnName, columnIndex) => {
+    const value = row[columnName];
+    const columnType = columns[columnIndex]?.ColumnType;
+
+    if (columnType === 'datetime') {
+      return toIsoWithoutMilliseconds(value);
+    }
+
+    return value;
+  }));
 
   return {
     TableName: name,
