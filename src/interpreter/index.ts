@@ -416,11 +416,16 @@ export class KustoInterpreter {
             {
               ExtentId: this.createDeterministicUuid(`extent:${tableName}:${payload}`),
               ItemLoaded: `inproc:${this.createDeterministicUuid(`item:${tableName}:${payload}`)}`,
-              Duration: Number(durationMs.toFixed(4)),
+              Duration: this.createTimespan(durationMs),
               HasErrors: false,
               OperationId: this.createDeterministicUuid(`operation:${tableName}:${payload}`),
             },
           ],
+          columnTypes: {
+            ExtentId: 'guid',
+            Duration: 'timespan',
+            OperationId: 'guid',
+          },
         };
       }
     }
@@ -1902,6 +1907,16 @@ export class KustoInterpreter {
   private createDeterministicUuid(seed: string): string {
     const hex = createHash('sha256').update(seed).digest('hex');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  }
+
+  private createTimespan(milliseconds: number): string {
+    const totalSeconds = Math.floor(milliseconds / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const fractionalMs = milliseconds % 1000;
+    const ticks = String(fractionalMs * 10000).padStart(7, '0');
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${ticks}`;
   }
 
   private toOrderedColumns(schemaText: string): Array<{ Name: string; Type: string; CslType: string }> {

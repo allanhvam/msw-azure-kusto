@@ -92,7 +92,24 @@ function typeForValue(value: unknown): string {
   return 'string';
 }
 
-function toKustoTable(name: string, rows: KustoRow[]): {
+const dataTypeMap: Record<string, string> = {
+  string: 'String',
+  int: 'Int32',
+  long: 'Int64',
+  real: 'Double',
+  bool: 'Boolean',
+  datetime: 'DateTime',
+  timespan: 'TimeSpan',
+  guid: 'Guid',
+  decimal: 'Decimal',
+  dynamic: 'Object',
+};
+
+function toDataType(columnType: string): string {
+  return dataTypeMap[columnType] ?? columnType;
+}
+
+function toKustoTable(name: string, rows: KustoRow[], columnTypes?: Record<string, string>): {
   TableName: string;
   Columns: Array<{ ColumnName: string; DataType: string; ColumnType: string }>;
   Rows: unknown[][];
@@ -102,12 +119,11 @@ function toKustoTable(name: string, rows: KustoRow[]): {
     : [];
 
   const columns = columnNames.map((columnName) => {
-    const firstValue = rows.find((row) => row[columnName] !== undefined)?.[columnName];
-    const dataType = typeForValue(firstValue);
+    const dataType = columnTypes?.[columnName] ?? typeForValue(rows.find((row) => row[columnName] !== undefined)?.[columnName]);
 
     return {
       ColumnName: columnName,
-      DataType: dataType,
+      DataType: toDataType(dataType),
       ColumnType: dataType,
     };
   });
@@ -123,7 +139,7 @@ function toKustoTable(name: string, rows: KustoRow[]): {
 
 function toQueryV1Response(result: KustoExecutionResult): { Tables: Array<ReturnType<typeof toKustoTable>> } {
   return {
-    Tables: [toKustoTable('Table_0', result.rows)],
+    Tables: [toKustoTable('Table_0', result.rows, result.columnTypes)],
   };
 }
 
@@ -142,7 +158,7 @@ function toQueryV2Response(result: KustoExecutionResult): Array<
       FrameType: 'DataTable',
       TableId: 0,
       TableKind: 'PrimaryResult',
-      ...toKustoTable('Table_0', result.rows),
+      ...toKustoTable('Table_0', result.rows, result.columnTypes),
     },
     {
       FrameType: 'DataSetCompletion',

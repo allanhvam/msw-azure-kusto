@@ -9,6 +9,7 @@ export type KustoRow = Record<string, KustoScalar>;
 export type KustoExecutionResult = {
   kind: 'query' | 'management';
   rows: KustoRow[];
+  columnTypes?: Record<string, string>;
 };
 
 export type QueryOperatorAst =

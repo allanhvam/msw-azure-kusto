@@ -84,7 +84,24 @@ function typeForValue(value: unknown): string {
   return 'string';
 }
 
-function toKustoTable(name: string, rows: Array<Record<string, unknown>>): {
+const dataTypeMap: Record<string, string> = {
+  string: 'String',
+  int: 'Int32',
+  long: 'Int64',
+  real: 'Double',
+  bool: 'Boolean',
+  datetime: 'DateTime',
+  timespan: 'TimeSpan',
+  guid: 'Guid',
+  decimal: 'Decimal',
+  dynamic: 'Object',
+};
+
+function toDataType(columnType: string): string {
+  return dataTypeMap[columnType] ?? columnType;
+}
+
+function toKustoTable(name: string, rows: Array<Record<string, unknown>>, columnTypes?: Record<string, string>): {
   TableName: string;
   Columns: Array<{ ColumnName: string; DataType: string; ColumnType: string }>;
   Rows: unknown[][];
@@ -94,12 +111,11 @@ function toKustoTable(name: string, rows: Array<Record<string, unknown>>): {
     : [];
 
   const columns = columnNames.map((columnName) => {
-    const firstValue = rows.find((row) => row[columnName] !== undefined)?.[columnName];
-    const dataType = typeForValue(firstValue);
+    const dataType = columnTypes?.[columnName] ?? typeForValue(rows.find((row) => row[columnName] !== undefined)?.[columnName]);
 
     return {
       ColumnName: columnName,
-      DataType: dataType,
+      DataType: toDataType(dataType),
       ColumnType: dataType,
     };
   });
@@ -113,13 +129,13 @@ function toKustoTable(name: string, rows: Array<Record<string, unknown>>): {
   };
 }
 
-function toQueryV1Response(rows: Array<Record<string, unknown>>): { Tables: Array<ReturnType<typeof toKustoTable>> } {
+function toQueryV1Response(rows: Array<Record<string, unknown>>, columnTypes?: Record<string, string>): { Tables: Array<ReturnType<typeof toKustoTable>> } {
   return {
-    Tables: [toKustoTable('Table_0', rows)],
+    Tables: [toKustoTable('Table_0', rows, columnTypes)],
   };
 }
 
-function toQueryV2Response(rows: Array<Record<string, unknown>>): Array<
+function toQueryV2Response(rows: Array<Record<string, unknown>>, columnTypes?: Record<string, string>): Array<
   | { FrameType: 'DataSetHeader'; IsProgressive: false; Version: 'v2.0' }
   | ({ FrameType: 'DataTable'; TableId: number; TableKind: 'PrimaryResult' } & ReturnType<typeof toKustoTable>)
   | { FrameType: 'DataSetCompletion'; HasErrors: false; Cancelled: false }
@@ -134,7 +150,7 @@ function toQueryV2Response(rows: Array<Record<string, unknown>>): Array<
       FrameType: 'DataTable',
       TableId: 0,
       TableKind: 'PrimaryResult',
-      ...toKustoTable('Table_0', rows),
+      ...toKustoTable('Table_0', rows, columnTypes),
     },
     {
       FrameType: 'DataSetCompletion',
@@ -277,7 +293,7 @@ async function main(): Promise<void> {
       const result = await getInterpreter(parsed.data.db).execute(parsed.data.csl, {
         queryParameters: toQueryParameters(parsed.data.properties),
       });
-      const response = toQueryV1Response(result.rows);
+      const response = toQueryV1Response(result.rows, result.columnTypes);
       logOutput('/v1/rest/mgmt', response);
 
       return c.json(response);
@@ -317,7 +333,7 @@ async function main(): Promise<void> {
       const result = await getInterpreter(parsed.data.db).execute(parsed.data.csl, {
         queryParameters: toQueryParameters(parsed.data.properties),
       });
-      const response = toQueryV1Response(result.rows);
+      const response = toQueryV1Response(result.rows, result.columnTypes);
       logOutput('/v1/rest/query', response);
 
       return c.json(response);
@@ -357,7 +373,7 @@ async function main(): Promise<void> {
       const result = await getInterpreter(parsed.data.db).execute(parsed.data.csl, {
         queryParameters: toQueryParameters(parsed.data.properties),
       });
-      const response = toQueryV2Response(result.rows);
+      const response = toQueryV2Response(result.rows, result.columnTypes);
       logOutput('/v2/rest/query', response);
 
       return c.json(response);
