@@ -6,159 +6,18 @@ import { z } from 'zod';
 import { DEFAULT_DATABASE_NAME } from './constants.js';
 import { KustoInterpreter } from './interpreter/index.js';
 import { renderDashboardPage } from './dashboard/ui.js';
+import { queryRequestSchema, managementRequestSchema, toQueryParameters, toQueryV1Response, toQueryV2Response } from './handlers/index.js';
 
 type CliOptions = {
   port: number;
   dashboardPort?: number;
 };
 
-const queryRequestSchema = z.object({
-  csl: z.string().min(1),
-  db: z.string().optional(),
-  properties: z.unknown().optional(),
-});
-
-const managementRequestSchema = z.object({
-  csl: z.string().min(1),
-  db: z.string().optional(),
-  properties: z.unknown().optional(),
-});
-
 const dashboardQuerySchema = z.object({
   csl: z.string().min(1),
   db: z.string().optional(),
   properties: z.unknown().optional(),
 });
-
-function toQueryParameters(properties: unknown): Record<string, unknown> | undefined {
-  if (properties === null || properties === undefined) {
-    return undefined;
-  }
-
-  let parsedProperties: unknown = properties;
-  if (typeof parsedProperties === 'string') {
-    try {
-      parsedProperties = JSON.parse(parsedProperties) as unknown;
-    } catch {
-      return undefined;
-    }
-  }
-
-  if (typeof parsedProperties !== 'object' || parsedProperties === null) {
-    return undefined;
-  }
-
-  const maybeParameters = (parsedProperties as { Parameters?: unknown }).Parameters;
-  if (typeof maybeParameters !== 'object' || maybeParameters === null || Array.isArray(maybeParameters)) {
-    return undefined;
-  }
-
-  return maybeParameters as Record<string, unknown>;
-}
-
-function typeForValue(value: unknown): string {
-  if (value instanceof Date) {
-    return 'datetime';
-  }
-
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? 'int' : 'real';
-  }
-
-  if (typeof value === 'boolean') {
-    return 'bool';
-  }
-
-  if (value === null || value === undefined) {
-    return 'string';
-  }
-
-  if (Array.isArray(value)) {
-    return 'dynamic';
-  }
-
-  if (typeof value === 'object') {
-    return 'dynamic';
-  }
-
-  return 'string';
-}
-
-const dataTypeMap: Record<string, string> = {
-  string: 'String',
-  int: 'Int32',
-  long: 'Int64',
-  real: 'Double',
-  bool: 'Boolean',
-  datetime: 'DateTime',
-  timespan: 'TimeSpan',
-  guid: 'Guid',
-  decimal: 'Decimal',
-  dynamic: 'Object',
-};
-
-function toDataType(columnType: string): string {
-  return dataTypeMap[columnType] ?? columnType;
-}
-
-function toKustoTable(name: string, rows: Array<Record<string, unknown>>, columnTypes?: Record<string, string>): {
-  TableName: string;
-  Columns: Array<{ ColumnName: string; DataType: string; ColumnType: string }>;
-  Rows: unknown[][];
-} {
-  const columnNames = rows.length > 0
-    ? Object.keys(rows[0])
-    : [];
-
-  const columns = columnNames.map((columnName) => {
-    const dataType = columnTypes?.[columnName] ?? typeForValue(rows.find((row) => row[columnName] !== undefined)?.[columnName]);
-
-    return {
-      ColumnName: columnName,
-      DataType: toDataType(dataType),
-      ColumnType: dataType,
-    };
-  });
-
-  const serializedRows = rows.map((row) => columnNames.map((columnName) => row[columnName]));
-
-  return {
-    TableName: name,
-    Columns: columns,
-    Rows: serializedRows,
-  };
-}
-
-function toQueryV1Response(rows: Array<Record<string, unknown>>, columnTypes?: Record<string, string>): { Tables: Array<ReturnType<typeof toKustoTable>> } {
-  return {
-    Tables: [toKustoTable('Table_0', rows, columnTypes)],
-  };
-}
-
-function toQueryV2Response(rows: Array<Record<string, unknown>>, columnTypes?: Record<string, string>): Array<
-  | { FrameType: 'DataSetHeader'; IsProgressive: false; Version: 'v2.0' }
-  | ({ FrameType: 'DataTable'; TableId: number; TableKind: 'PrimaryResult' } & ReturnType<typeof toKustoTable>)
-  | { FrameType: 'DataSetCompletion'; HasErrors: false; Cancelled: false }
-> {
-  return [
-    {
-      FrameType: 'DataSetHeader',
-      IsProgressive: false,
-      Version: 'v2.0',
-    },
-    {
-      FrameType: 'DataTable',
-      TableId: 0,
-      TableKind: 'PrimaryResult',
-      ...toKustoTable('Table_0', rows, columnTypes),
-    },
-    {
-      FrameType: 'DataSetCompletion',
-      HasErrors: false,
-      Cancelled: false,
-    },
-  ];
-}
 
 function parseCliArgs(argv: string[]): CliOptions {
   let port = 3000;
@@ -293,7 +152,7 @@ async function main(): Promise<void> {
       const result = await getInterpreter(parsed.data.db).execute(parsed.data.csl, {
         queryParameters: toQueryParameters(parsed.data.properties),
       });
-      const response = toQueryV1Response(result.rows, result.columnTypes);
+      const response = toQueryV1Response(result);
       logOutput('/v1/rest/mgmt', response);
 
       return c.json(response);
@@ -333,7 +192,7 @@ async function main(): Promise<void> {
       const result = await getInterpreter(parsed.data.db).execute(parsed.data.csl, {
         queryParameters: toQueryParameters(parsed.data.properties),
       });
-      const response = toQueryV1Response(result.rows, result.columnTypes);
+      const response = toQueryV1Response(result);
       logOutput('/v1/rest/query', response);
 
       return c.json(response);
@@ -373,7 +232,7 @@ async function main(): Promise<void> {
       const result = await getInterpreter(parsed.data.db).execute(parsed.data.csl, {
         queryParameters: toQueryParameters(parsed.data.properties),
       });
-      const response = toQueryV2Response(result.rows, result.columnTypes);
+      const response = toQueryV2Response(result);
       logOutput('/v2/rest/query', response);
 
       return c.json(response);

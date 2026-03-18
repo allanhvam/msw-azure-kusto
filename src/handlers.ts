@@ -1,48 +1,10 @@
 import { http, HttpResponse } from 'msw';
-import { z } from 'zod';
-import { KustoInterpreter, type KustoExecutionResult, type KustoRow } from './interpreter/index.js';
+import { KustoInterpreter } from './interpreter/index.js';
 import { DEFAULT_DATABASE_NAME } from './constants.js';
-
-const queryRequestSchema = z.object({
-  csl: z.string().min(1),
-  db: z.string().optional(),
-  properties: z.unknown().optional(),
-});
-
-const managementRequestSchema = z.object({
-  csl: z.string().min(1),
-  db: z.string().optional(),
-  properties: z.unknown().optional(),
-});
+import { queryRequestSchema, managementRequestSchema, toQueryParameters, toQueryV1Response, toQueryV2Response } from './handlers/index.js';
 
 const acceptedDomains = ['*.kusto.windows.net', 'kusto.local'];
 const wildcardPrefix = '*.';
-
-function toQueryParameters(properties: unknown): Record<string, unknown> | undefined {
-  if (properties === null || properties === undefined) {
-    return undefined;
-  }
-
-  let parsedProperties: unknown = properties;
-  if (typeof parsedProperties === 'string') {
-    try {
-      parsedProperties = JSON.parse(parsedProperties) as unknown;
-    } catch {
-      return undefined;
-    }
-  }
-
-  if (typeof parsedProperties !== 'object' || parsedProperties === null) {
-    return undefined;
-  }
-
-  const maybeParameters = (parsedProperties as { Parameters?: unknown }).Parameters;
-  if (typeof maybeParameters !== 'object' || maybeParameters === null || Array.isArray(maybeParameters)) {
-    return undefined;
-  }
-
-  return maybeParameters as Record<string, unknown>;
-}
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -62,110 +24,6 @@ function buildKustoUrlMatcher(path: string): RegExp {
   const escapedPath = escapeRegex(path);
 
   return new RegExp(`^https://(?:${domainsPattern})${escapedPath}(?:\\?.*)?$`, 'i');
-}
-
-function typeForValue(value: unknown): string {
-  if (value instanceof Date) {
-    return 'datetime';
-  }
-
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? 'int' : 'real';
-  }
-
-  if (typeof value === 'boolean') {
-    return 'bool';
-  }
-
-  if (value === null || value === undefined) {
-    return 'string';
-  }
-
-  if (Array.isArray(value)) {
-    return 'dynamic';
-  }
-
-  if (typeof value === 'object') {
-    return 'dynamic';
-  }
-
-  return 'string';
-}
-
-const dataTypeMap: Record<string, string> = {
-  string: 'String',
-  int: 'Int32',
-  long: 'Int64',
-  real: 'Double',
-  bool: 'Boolean',
-  datetime: 'DateTime',
-  timespan: 'TimeSpan',
-  guid: 'Guid',
-  decimal: 'Decimal',
-  dynamic: 'Object',
-};
-
-function toDataType(columnType: string): string {
-  return dataTypeMap[columnType] ?? columnType;
-}
-
-function toKustoTable(name: string, rows: KustoRow[], columnTypes?: Record<string, string>): {
-  TableName: string;
-  Columns: Array<{ ColumnName: string; DataType: string; ColumnType: string }>;
-  Rows: unknown[][];
-} {
-  const columnNames = rows.length > 0
-    ? Object.keys(rows[0])
-    : [];
-
-  const columns = columnNames.map((columnName) => {
-    const dataType = columnTypes?.[columnName] ?? typeForValue(rows.find((row) => row[columnName] !== undefined)?.[columnName]);
-
-    return {
-      ColumnName: columnName,
-      DataType: toDataType(dataType),
-      ColumnType: dataType,
-    };
-  });
-
-  const serializedRows = rows.map((row) => columnNames.map((columnName) => row[columnName]));
-
-  return {
-    TableName: name,
-    Columns: columns,
-    Rows: serializedRows,
-  };
-}
-
-function toQueryV1Response(result: KustoExecutionResult): { Tables: Array<ReturnType<typeof toKustoTable>> } {
-  return {
-    Tables: [toKustoTable('Table_0', result.rows, result.columnTypes)],
-  };
-}
-
-function toQueryV2Response(result: KustoExecutionResult): Array<
-  | { FrameType: 'DataSetHeader'; IsProgressive: false; Version: 'v2.0' }
-  | ({ FrameType: 'DataTable'; TableId: number; TableKind: 'PrimaryResult' } & ReturnType<typeof toKustoTable>)
-  | { FrameType: 'DataSetCompletion'; HasErrors: false; Cancelled: false }
-> {
-  return [
-    {
-      FrameType: 'DataSetHeader',
-      IsProgressive: false,
-      Version: 'v2.0',
-    },
-    {
-      FrameType: 'DataTable',
-      TableId: 0,
-      TableKind: 'PrimaryResult',
-      ...toKustoTable('Table_0', result.rows, result.columnTypes),
-    },
-    {
-      FrameType: 'DataSetCompletion',
-      HasErrors: false,
-      Cancelled: false,
-    },
-  ];
 }
 
 function badRequest(message: string) {
