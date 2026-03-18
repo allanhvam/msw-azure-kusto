@@ -100,6 +100,71 @@ test('management endpoint executes ingest command', async () => {
   }
 });
 
+test('management endpoint returns table metadata for create table', async () => {
+  const server = setupServer(...handlers());
+  server.listen();
+
+  try {
+    const response = await fetch('https://kusto.local/v1/rest/mgmt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        db: 'Meetings',
+        csl: '.create table SensorReadings (Timestamp: datetime, SensorId: string, Temperature: real, Humidity: real)',
+      }),
+    });
+
+    assert.equal(response.status, 200);
+
+    const json = await response.json();
+    assert.deepEqual(json, {
+      Tables: [
+        {
+            TableName: "Table_0",
+            Columns: [
+                {
+                    ColumnName: "TableName",
+                    DataType: "String",
+                    ColumnType: "string",
+                },
+                {
+                    ColumnName: "Schema",
+                    DataType: "String",
+                    ColumnType: "string",
+                },
+                {
+                    ColumnName: "DatabaseName",
+                    DataType: "String",
+                    ColumnType: "string",
+                },
+                {
+                    ColumnName: "Folder",
+                    DataType: "String",
+                    ColumnType: "string",
+                },
+                {
+                    ColumnName: "DocString",
+                    DataType: "String",
+                    ColumnType: "string",
+                },
+            ],
+            Rows: [
+                [
+                    "SensorReadings",
+                    "{\"Name\":\"SensorReadings\",\"OrderedColumns\":[{\"Name\":\"Timestamp\",\"Type\":\"System.DateTime\",\"CslType\":\"datetime\"},{\"Name\":\"SensorId\",\"Type\":\"System.String\",\"CslType\":\"string\"},{\"Name\":\"Temperature\",\"Type\":\"System.Double\",\"CslType\":\"real\"},{\"Name\":\"Humidity\",\"Type\":\"System.Double\",\"CslType\":\"real\"}]}",
+                    "Meetings",
+                    null,
+                    null,
+                ],
+            ],
+        },
+    ],
+    });
+  } finally {
+    server.close();
+  }
+});
+
 test('kusto handler returns dynamic values as objects', async () => {
   const server = setupServer(...handlers());
   server.listen();

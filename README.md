@@ -10,6 +10,19 @@ TypeScript Azure Data Explorer (Kusto) HTTP emulator for local testing with MSW.
 2. Install `msw-azure-kusto`
 3. Import `handlers` from `msw-azure-kusto` and pass them to your MSW setup
 
+### CLI emulator
+
+You can run a standalone local Kusto emulator with `npx`:
+
+```bash
+npx msw-azure-kusto --port 80 --dashboard 4000
+```
+
+Flags:
+
+- `--port` (`-p`) HTTP port for the Kusto emulator endpoints.
+- `--dashboard` Optional dashboard UI port.
+
 ### Install
 
 ```bash
