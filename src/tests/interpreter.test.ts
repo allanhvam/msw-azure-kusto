@@ -503,6 +503,27 @@ test('interprets datatable query source', async () => {
     { EventType: 'Wildfire', State: 'California', DamageProperty: 2500000 },
     { EventType: 'Flood', State: 'California', DamageProperty: 1500000 },
   ]);
+  assert.deepEqual(result.columnTypes, {
+    EventType: 'string',
+    State: 'string',
+    DamageProperty: 'long',
+  });
+});
+
+test('prefers created table schema types for query column types', async () => {
+  const interpreter = new KustoInterpreter();
+
+  await interpreter.execute('.create table Metrics (Id:long, Name:string)');
+  await interpreter.execute('.ingest inline into table Metrics <| 1,alpha');
+
+  const result = await interpreter.execute('Metrics | project Id, Name');
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Id: 1, Name: 'alpha' }]);
+  assert.deepEqual(result.columnTypes, {
+    Id: 'long',
+    Name: 'string',
+  });
 });
 
 test('interprets count operator', async () => {

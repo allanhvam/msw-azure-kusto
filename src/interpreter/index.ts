@@ -204,9 +204,13 @@ export class KustoInterpreter {
       };
     }
 
+    const rows = this.executeQueryAst(ast.query);
+    const columnTypes = this.getQueryResultColumnTypes(ast.query, rows);
+
     return {
       kind: 'query',
-      rows: this.executeQueryAst(ast.query),
+      rows,
+      ...(columnTypes ? { columnTypes } : {}),
     };
   }
 
@@ -778,6 +782,113 @@ export class KustoInterpreter {
     }
 
     return this.createRowsFromDataTableExpression(dataTableExpression);
+  }
+
+  private getQueryResultColumnTypes(query: QueryAst, rows: KustoRow[]): Record<string, string> | undefined {
+    const sourceTypes = this.getQuerySourceColumnTypes(query.source);
+    if (!sourceTypes) {
+      return undefined;
+    }
+
+    const columnNames = rows.length > 0
+      ? Object.keys(rows[0])
+      : Array.from(sourceTypes.keys());
+
+    const columnTypes: Record<string, string> = {};
+    for (const columnName of columnNames) {
+      const sourceType = sourceTypes.get(columnName);
+      if (!sourceType) {
+        continue;
+      }
+
+      if (!this.isColumnCompatibleWithType(rows, columnName, sourceType)) {
+        continue;
+      }
+
+      columnTypes[columnName] = sourceType;
+    }
+
+    if (Object.keys(columnTypes).length === 0) {
+      return undefined;
+    }
+
+    return columnTypes;
+  }
+
+  private isColumnCompatibleWithType(rows: KustoRow[], columnName: string, sourceType: string): boolean {
+    for (const row of rows) {
+      const value = row[columnName];
+      if (value === null || value === undefined) {
+        continue;
+      }
+
+      return this.isValueCompatibleWithType(value, sourceType);
+    }
+
+    return true;
+  }
+
+  private isValueCompatibleWithType(value: KustoScalar, sourceType: string): boolean {
+    switch (sourceType) {
+      case 'datetime':
+        if (value instanceof Date) {
+          return !Number.isNaN(value.getTime());
+        }
+
+        if (typeof value !== 'string') {
+          return false;
+        }
+
+        return !Number.isNaN(Date.parse(value));
+      case 'bool':
+        return typeof value === 'boolean';
+      case 'int':
+      case 'long':
+      case 'real':
+      case 'decimal':
+        return typeof value === 'number';
+      case 'dynamic':
+        return typeof value === 'object';
+      case 'string':
+      case 'guid':
+      case 'timespan':
+        return typeof value === 'string';
+      default:
+        return true;
+    }
+  }
+
+  private getQuerySourceColumnTypes(source: QueryAst['source']): Map<string, string> | null {
+    if (source.kind === 'table') {
+      return this.schemaTypes.get(this.normalizeName(source.name)) ?? null;
+    }
+
+    if (source.kind === 'datatable') {
+      return this.getDataTableColumnTypes(source.expressionText);
+    }
+
+    return null;
+  }
+
+  private getDataTableColumnTypes(expressionText: string): Map<string, string> | null {
+    const dataTableExpression = this.tryParseDataTableExpression(expressionText);
+    if (!dataTableExpression) {
+      return null;
+    }
+
+    const types = new Map<string, string>();
+    for (const declaration of dataTableExpression.rowSchema().rowSchemaColumnDeclaration()) {
+      const columnName = declaration.parameterName().getText();
+      const columnType = declaration.scalarType().getText().trim().toLowerCase();
+
+      if (columnName.length === 0 || columnType.length === 0) {
+        continue;
+      }
+
+      types.set(columnName, columnType);
+    }
+
+    return types;
   }
 
   private executeSetStatement(setStatement: SetStatementContext): void {
