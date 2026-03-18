@@ -244,6 +244,18 @@ export function handlers(): Array<ReturnType<typeof http.get> | ReturnType<typeo
     }
   });
 
+  if (process.env.PORTLESS_URL) {
+    import('./dashboard/dashboard.js').then((pkg) => {
+      pkg.dashboard({
+        executeQuery: async (input) => {
+          return await getInterpreter(input.db).execute(input.csl, {
+            queryParameters: toQueryParameters(input.properties),
+          });
+        },
+      });
+    });
+  }
+
   return [
     authMetadataHandler,
     queryHandler,
