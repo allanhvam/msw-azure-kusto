@@ -260,7 +260,9 @@ test("rest sensor readings", async () => {
 
     assert.equal(response.status, 200);
 
-    actual = await response.json();
+    const rawQueryResponse = await response.text();
+    assert.match(rawQueryResponse, /"sensor-1",22\.5,45\.0\]/);
+    actual = JSON.parse(rawQueryResponse);
     const expected2 = [
       {
         FrameType: "DataSetHeader",

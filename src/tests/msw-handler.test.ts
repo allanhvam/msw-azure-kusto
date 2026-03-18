@@ -206,3 +206,35 @@ test('kusto handler isolates data per database', async () => {
     server.close();
   }
 });
+
+test('kusto handler serializes integer real values with decimal digit', async () => {
+  const server = setupServer(...handlers());
+  server.listen();
+
+  try {
+    await fetch('https://kusto.local/v1/rest/mgmt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csl: '.create table RealValues (Value:real)' }),
+    });
+
+    await fetch('https://kusto.local/v1/rest/mgmt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csl: '.ingest inline into table RealValues <| 1' }),
+    });
+
+    const response = await fetch('https://kusto.local/v2/rest/query', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csl: 'RealValues | project Value' }),
+    });
+
+    assert.equal(response.status, 200);
+
+    const body = await response.text();
+    assert.match(body, /"Rows":\[\[1\.0\]\]/);
+  } finally {
+    server.close();
+  }
+});

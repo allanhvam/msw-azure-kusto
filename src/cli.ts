@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { DEFAULT_DATABASE_NAME } from './constants.js';
 import { KustoInterpreter } from './interpreter/index.js';
 import { renderDashboardPage } from './dashboard/ui.js';
-import { queryRequestSchema, managementRequestSchema, toQueryParameters, toQueryV1Response, toQueryV2Response } from './handlers/index.js';
+import { queryRequestSchema, managementRequestSchema, stringifyResponseWithRealFormatting, toQueryParameters, toQueryV1Response, toQueryV2Response } from './handlers/index.js';
 
 type CliOptions = {
   port: number;
@@ -155,7 +155,11 @@ async function main(): Promise<void> {
       const response = toQueryV1Response(result);
       logOutput('/v1/rest/mgmt', response);
 
-      return c.json(response);
+      return new Response(stringifyResponseWithRealFormatting(response), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
     } catch (error) {
       logErrorOutput('/v1/rest/mgmt', error instanceof Error ? error.message : 'Management command failed.');
       return c.json(
@@ -195,7 +199,11 @@ async function main(): Promise<void> {
       const response = toQueryV1Response(result);
       logOutput('/v1/rest/query', response);
 
-      return c.json(response);
+      return new Response(stringifyResponseWithRealFormatting(response), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
     } catch (error) {
       logErrorOutput('/v1/rest/query', error instanceof Error ? error.message : 'Query execution failed.');
       return c.json(
@@ -235,7 +243,11 @@ async function main(): Promise<void> {
       const response = toQueryV2Response(result);
       logOutput('/v2/rest/query', response);
 
-      return c.json(response);
+      return new Response(stringifyResponseWithRealFormatting(response), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
     } catch (error) {
       logErrorOutput('/v2/rest/query', error instanceof Error ? error.message : 'Query execution failed.');
       return c.json(

@@ -1,7 +1,7 @@
 import { http, HttpResponse } from 'msw';
 import { KustoInterpreter } from './interpreter/index.js';
 import { DEFAULT_DATABASE_NAME } from './constants.js';
-import { queryRequestSchema, managementRequestSchema, toQueryParameters, toQueryV1Response, toQueryV2Response } from './handlers/index.js';
+import { queryRequestSchema, managementRequestSchema, stringifyResponseWithRealFormatting, toQueryParameters, toQueryV1Response, toQueryV2Response } from './handlers/index.js';
 
 const acceptedDomains = ['*.kusto.windows.net', 'kusto.local'];
 const wildcardPrefix = '*.';
@@ -23,7 +23,7 @@ function buildKustoUrlMatcher(path: string): RegExp {
   const domainsPattern = acceptedDomains.map(domainToPattern).join('|');
   const escapedPath = escapeRegex(path);
 
-  return new RegExp(`^https://(?:${domainsPattern})${escapedPath}(?:\\?.*)?$`, 'i');
+  return new RegExp(`^https://(?:${domainsPattern})(?::\\d+)?${escapedPath}(?:\\?.*)?$`, 'i');
 }
 
 function badRequest(message: string) {
@@ -36,6 +36,16 @@ function badRequest(message: string) {
     },
     { status: 400 },
   );
+}
+
+function jsonResponseWithRealFormatting(payload: unknown): HttpResponse<string> {
+  const json = stringifyResponseWithRealFormatting(payload);
+
+  return HttpResponse.text(json, {
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
 }
 
 export function handlers(): Array<ReturnType<typeof http.get> | ReturnType<typeof http.post>> {
@@ -86,7 +96,7 @@ export function handlers(): Array<ReturnType<typeof http.get> | ReturnType<typeo
       return execution.errorResponse;
     }
 
-    return HttpResponse.json(toQueryV2Response(execution.result));
+    return jsonResponseWithRealFormatting(toQueryV2Response(execution.result));
   });
 
   const queryV1Handler = http.post(buildKustoUrlMatcher('/v1/rest/query'), async ({ request }) => {
@@ -95,7 +105,7 @@ export function handlers(): Array<ReturnType<typeof http.get> | ReturnType<typeo
       return execution.errorResponse;
     }
 
-    return HttpResponse.json(toQueryV1Response(execution.result));
+    return jsonResponseWithRealFormatting(toQueryV1Response(execution.result));
   });
 
   const managementHandler = http.post(buildKustoUrlMatcher('/v1/rest/mgmt'), async ({ request }) => {
@@ -112,7 +122,7 @@ export function handlers(): Array<ReturnType<typeof http.get> | ReturnType<typeo
         queryParameters: toQueryParameters(parsed.data.properties),
       });
 
-      return HttpResponse.json(toQueryV1Response(result));
+      return jsonResponseWithRealFormatting(toQueryV1Response(result));
     } catch (error) {
       return badRequest(error instanceof Error ? error.message : 'Management command failed.');
     }
