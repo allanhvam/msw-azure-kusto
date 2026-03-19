@@ -4,37 +4,37 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KqlLexer } from '../parser/KqlLexer.js';
 import {
+  type AfterPipeOperatorContext,
   type DeclareQueryParametersStatementContext,
   KqlParser,
   type DataTableExpressionContext,
   type EntityExpressionContext,
   type LetStatementContext,
+  type NamedExpressionContext,
+  type OrderedExpressionContext,
   type PipeExpressionContext,
   type SetStatementContext,
   type StatementContext,
+  type ToScalarExpressionContext,
   type UnnamedExpressionContext,
 } from '../parser/KqlParser.js';
 import { setRowIngestionTime } from './ingestion-time.js';
 import {
-  parsePipeExpressionToQueryAst,
-  parseQueryStatementToCommandAst,
-  parseStatementToCommandAst,
+  getAlias,
+  isDescending,
+  extractManagementCommandFields,
+  getQueryStatementPipeExpression,
+  getStatementPipeExpression,
   type QueryAstParserOptions,
 } from './query-ast-parser.js';
-import { executeQueryAst as executeQueryAstInternal, type QueryAstExecutionHandlers } from './query-ast-executor.js';
+import { executePipeExpression, applyOperators, type QueryAstExecutionHandlers } from './query-ast-executor.js';
 import { SummarizeOperator } from './summarize-operator.js';
 import { TabularOperators } from './tabular-operators.js';
 import { ExpressionAstEvaluator } from './expression-ast-evaluator.js';
 import type {
-  CommandAst,
   KustoExecutionResult,
   KustoRow,
   KustoScalar,
-  NamedExpressionAst,
-  OrderedExpressionAst,
-  QueryAst,
-  QueryOperatorAst,
-  TabularSourceAst,
 } from './types.js';
 
 export type { KustoExecutionResult, KustoRow, KustoScalar } from './types.js';
@@ -61,33 +61,8 @@ export class KustoInterpreter {
     compareValues: (left, right) => this.compareValues(left, right),
   });
   private readonly tabularOperators = new TabularOperators({
-    resolveTabularSourceRows: (source) => this.resolveTabularSourceRows(source),
-    executePartitionSubquery: (groupRows, subExpressionOperators) => {
-      const partitionQuery: QueryAst = {
-        source: {
-          kind: 'table',
-          name: '__partition__',
-        },
-        operators: subExpressionOperators,
-      };
-
-      const previousTable = this.currentLetTableBindings?.get('__partition__') ?? null;
-      const tableBindings = this.currentLetTableBindings ?? new Map<string, KustoRow[]>();
-      tableBindings.set('__partition__', groupRows.map((row) => ({ ...row })));
-
-      const previousBindingsMap = this.currentLetTableBindings;
-      this.currentLetTableBindings = tableBindings;
-      try {
-        return this.executeQueryAst(partitionQuery);
-      } finally {
-        if (previousTable) {
-          tableBindings.set('__partition__', previousTable);
-        } else {
-          tableBindings.delete('__partition__');
-        }
-        this.currentLetTableBindings = previousBindingsMap;
-      }
-    },
+    executePartitionSubquery: (groupRows, subExpressionOperators) =>
+      applyOperators(groupRows.map((row) => ({ ...row })), subExpressionOperators, this.queryExecutionHandlers, null),
   });
   private readonly expressionAstEvaluator = new ExpressionAstEvaluator({
     parseScalar: (text) => this.parseScalar(text),
@@ -103,9 +78,9 @@ export class KustoInterpreter {
     evaluateToScalarExpression: (toScalarExpression) => this.evaluateToScalarExpression(toScalarExpression),
   });
   private readonly queryExecutionHandlers: QueryAstExecutionHandlers = {
+    parserOptions: this.parserOptions,
     resolveTableSource: (name) => this.getQuerySourceRows(name),
     resolveDataTableSource: (expressionText) => this.createRowsFromDataTableText(expressionText),
-    resolveUnionSource: (sources) => this.resolveUnionRows(sources),
     resolvePrintSource: (expressions) => this.createPrintRows(expressions),
     resolveRangeSource: (columnName, fromExpression, toExpression, stepExpression) =>
       this.createRangeRows(columnName, fromExpression, toExpression, stepExpression),
@@ -123,11 +98,11 @@ export class KustoInterpreter {
     applyMakeSeries: (rows, aggregations, on, fromExpression, toExpression, stepExpression, by) =>
       this.applyMakeSeriesAst(rows, aggregations, on, fromExpression, toExpression, stepExpression, by),
     applySummarize: (rows, aggregations, by) => this.applySummarizeAst(rows, aggregations, by),
-    applyUnion: (rows, sources) => this.applyUnionAst(rows, sources),
+    applyUnion: (rows, unionRows) => this.tabularOperators.applyUnion(rows, unionRows),
     applyPartition: (rows, byExpression, subExpressionOperators) =>
       this.applyPartitionAst(rows, byExpression, subExpressionOperators),
-    applyJoin: (rows, joinKind, rightSource, on) => this.applyJoinAst(rows, joinKind, rightSource, on),
-    applyLookup: (rows, lookupKind, rightSource, on) => this.applyLookupAst(rows, lookupKind, rightSource, on),
+    applyJoin: (rows, joinKind, rightRows, on) => this.tabularOperators.applyJoin(rows, joinKind, rightRows, on),
+    applyLookup: (rows, lookupKind, rightRows, on) => this.tabularOperators.applyLookup(rows, lookupKind, rightRows, on),
   };
   private currentLetBindings: KustoRow | null = null;
   private currentLetTableBindings: Map<string, KustoRow[]> | null = null;
@@ -146,34 +121,6 @@ export class KustoInterpreter {
     return Array.from(this.tables.keys()).sort((left, right) => left.localeCompare(right));
   }
 
-  private parseManagementCommandAst(text: string): (CommandAst & { kind: 'management' }) | null {
-    try {
-      const command = text.trim();
-      const lexer = new KqlLexer(antlr.CharStream.fromString(command));
-      const tokens = new antlr.CommonTokenStream(lexer);
-      const parser = new KqlParser(tokens);
-      const top = parser.top();
-
-      if (parser.numberOfSyntaxErrors > 0) {
-        return null;
-      }
-
-      const statements = top.query().statement();
-      if (statements.length !== 1) {
-        return null;
-      }
-
-      const ast = parseStatementToCommandAst(statements[0], command, this.parserOptions);
-      if (ast.kind !== 'management') {
-        return null;
-      }
-
-      return ast;
-    } catch {
-      return null;
-    }
-  }
-
   public async execute(text: string, options: KustoExecuteOptions = {}): Promise<KustoExecutionResult> {
     const startedAt = Date.now();
     const command = text.trim();
@@ -188,24 +135,27 @@ export class KustoInterpreter {
 
     const statements = top.query().statement();
     if (statements.length === 1) {
-      const ast = parseStatementToCommandAst(statements[0], command, this.parserOptions);
-      const result = await this.executeCommandAst(ast);
-      return this.decorateExecuteResult(ast, result, startedAt);
+      const pipeExpression = getStatementPipeExpression(statements[0]);
+      return this.executeCommand(pipeExpression, command, startedAt);
     }
 
       return this.executeScriptStatements(statements, startedAt, command, options);
   }
 
-  private async executeCommandAst(ast: CommandAst): Promise<KustoExecutionResult> {
-    if (ast.kind === 'management') {
-      return {
-        kind: 'management',
-        rows: await this.executeManagementCommand(ast),
-      };
+  private async executeCommand(
+    pipeExpression: PipeExpressionContext,
+    rawCommand: string,
+    startedAt: number,
+  ): Promise<KustoExecutionResult> {
+    const managementCtx = pipeExpression.beforePipeExpression().managementCommandExpression();
+    if (managementCtx) {
+      const parsed = extractManagementCommandFields(managementCtx, rawCommand);
+      const rows = await this.executeManagementCommand(parsed);
+      return this.decorateManagementResult(parsed, rows, startedAt);
     }
 
-    const rows = this.executeQueryAst(ast.query);
-    const columnTypes = this.getQueryResultColumnTypes(ast.query, rows);
+    const rows = this.executePipeExpression(pipeExpression, rawCommand);
+    const columnTypes = this.getQueryResultColumnTypes(pipeExpression, rows);
 
     return {
       kind: 'query',
@@ -222,7 +172,7 @@ export class KustoInterpreter {
   ): Promise<KustoExecutionResult> {
     const letBindings: KustoRow = this.normalizeQueryParameters(options.queryParameters);
     const letTableBindings = new Map<string, KustoRow[]>();
-    let finalCommandAst: CommandAst | null = null;
+    let finalPipeExpression: PipeExpressionContext | null = null;
 
     for (const statement of statements) {
       const declareQueryParametersStatement = statement.declareQueryParametersStatement();
@@ -248,18 +198,14 @@ export class KustoInterpreter {
         throw new Error('Only declare query_parameters, let, set, and query statements are supported.');
       }
 
-      if (finalCommandAst !== null) {
+      if (finalPipeExpression !== null) {
         throw new Error('Only one query statement is supported after let/set statements.');
       }
 
-      finalCommandAst = parseQueryStatementToCommandAst(
-        queryStatement,
-        rawCommand,
-        this.parserOptions,
-      );
+      finalPipeExpression = getQueryStatementPipeExpression(queryStatement);
     }
 
-    if (!finalCommandAst) {
+    if (!finalPipeExpression) {
       return {
         kind: 'management',
         rows: [],
@@ -271,8 +217,7 @@ export class KustoInterpreter {
     this.currentLetBindings = letBindings;
     this.currentLetTableBindings = letTableBindings;
     try {
-      const result = await this.executeCommandAst(finalCommandAst);
-      return this.decorateExecuteResult(finalCommandAst, result, startedAt);
+      return this.executeCommand(finalPipeExpression, rawCommand, startedAt);
     } finally {
       this.currentLetBindings = previousBindings;
       this.currentLetTableBindings = previousTableBindings;
@@ -316,25 +261,25 @@ export class KustoInterpreter {
     return bindings;
   }
 
-  private decorateExecuteResult(
-    ast: CommandAst,
-    result: KustoExecutionResult,
+  private decorateManagementResult(
+    parsed: ReturnType<typeof extractManagementCommandFields>,
+    rows: KustoRow[],
     startedAt: number,
   ): KustoExecutionResult {
-    if (this.defaultDatabaseName === null || ast.kind !== 'management' || result.kind !== 'management') {
-      return result;
+    if (this.defaultDatabaseName === null) {
+      return { kind: 'management', rows };
     }
 
     const durationMs = Math.round((Date.now() - startedAt) / 50) * 50;
 
-    if ((ast.commandName === 'create' || ast.commandName === 'alter') && ast.tableName && ast.schemaText !== null) {
-      const tableName = this.normalizeName(ast.tableName);
+    if ((parsed.commandName === 'create' || parsed.commandName === 'alter') && parsed.tableName && parsed.schemaText !== null) {
+      const tableName = this.normalizeName(parsed.tableName);
       return {
         kind: 'management',
         rows: [
           {
             TableName: tableName,
-            Schema: JSON.stringify({ Name: tableName, OrderedColumns: this.toOrderedColumns(ast.schemaText) }),
+            Schema: JSON.stringify({ Name: tableName, OrderedColumns: this.toOrderedColumns(parsed.schemaText) }),
             DatabaseName: this.defaultDatabaseName,
             Folder: null,
             DocString: null,
@@ -343,20 +288,20 @@ export class KustoInterpreter {
       };
     }
 
-    if (ast.commandName === 'create-or-alter' && ast.tableName) {
-      const [firstToken, secondToken, thirdToken] = ast.argumentTokens;
+    if (parsed.commandName === 'create-or-alter' && parsed.tableName) {
+      const [firstToken, secondToken, thirdToken] = parsed.argumentTokens;
       if (firstToken === 'ingestion' && secondToken === 'json' && thirdToken === 'mapping') {
-        const tableName = this.normalizeName(ast.tableName);
-        const mappingMatch = ast.command.match(/\bmapping\s+'([^']+)'\s+'([\s\S]*)'\s*$/i);
+        const tableName = this.normalizeName(parsed.tableName);
+        const mappingMatch = parsed.command.match(/\bmapping\s+'([^']+)'\s+'([\s\S]*)'\s*$/i);
         if (mappingMatch) {
           const mappingName = mappingMatch[1];
           const mappingText = mappingMatch[2];
 
           let normalizedMapping = mappingText;
           try {
-            const parsed = JSON.parse(mappingText) as unknown;
-            if (Array.isArray(parsed)) {
-              normalizedMapping = JSON.stringify(parsed.map((entry) => {
+            const mappingParsed = JSON.parse(mappingText) as unknown;
+            if (Array.isArray(mappingParsed)) {
+              normalizedMapping = JSON.stringify(mappingParsed.map((entry) => {
                 const item = (entry ?? {}) as Record<string, unknown>;
                 const properties = item.Properties as Record<string, unknown> | undefined;
                 const column = typeof item.column === 'string'
@@ -409,11 +354,11 @@ export class KustoInterpreter {
       }
     }
 
-    if (ast.commandName === 'ingest' && ast.tableName && ast.fromQueryPayload !== null) {
-      const ingestKind = ast.argumentTokens[0];
+    if (parsed.commandName === 'ingest' && parsed.tableName && parsed.fromQueryPayload !== null) {
+      const ingestKind = parsed.argumentTokens[0];
       if (ingestKind === 'inline' || ingestKind === 'uri') {
-        const tableName = this.normalizeName(ast.tableName);
-        const payload = ast.fromQueryPayload.trim();
+        const tableName = this.normalizeName(parsed.tableName);
+        const payload = parsed.fromQueryPayload.trim();
         return {
           kind: 'management',
           rows: [
@@ -434,7 +379,7 @@ export class KustoInterpreter {
       }
     }
 
-    if (ast.commandName === 'drop') {
+    if (parsed.commandName === 'drop') {
       return {
         kind: 'management',
         rows: this.listTables().map((name) => ({
@@ -446,7 +391,7 @@ export class KustoInterpreter {
       };
     }
 
-    return result;
+    return { kind: 'management', rows };
   }
 
   private executeLetStatement(
@@ -457,14 +402,13 @@ export class KustoInterpreter {
     const materializeDeclaration = letStatement.letMaterializeDeclaration();
     if (materializeDeclaration) {
       const name = materializeDeclaration.identifierOrKeywordOrEscapedName().getText();
-      const queryAst = parsePipeExpressionToQueryAst(materializeDeclaration.pipeExpression(), this.parserOptions);
 
       const previousBindings = this.currentLetBindings;
       const previousTableBindings = this.currentLetTableBindings;
       this.currentLetBindings = letBindings;
       this.currentLetTableBindings = letTableBindings;
       try {
-        const rows = this.executeQueryAst(queryAst).map((row) => ({ ...row }));
+        const rows = this.executePipeExpression(materializeDeclaration.pipeExpression(), null).map((row) => ({ ...row }));
         letTableBindings.set(name, rows);
         delete letBindings[name];
       } finally {
@@ -519,14 +463,12 @@ export class KustoInterpreter {
       return null;
     }
 
-    const queryAst = parsePipeExpressionToQueryAst(pipeExpression, this.parserOptions);
-
     const previousBindings = this.currentLetBindings;
     const previousTableBindings = this.currentLetTableBindings;
     this.currentLetBindings = letBindings;
     this.currentLetTableBindings = letTableBindings;
     try {
-      const rows = this.executeQueryAst(queryAst);
+      const rows = this.executePipeExpression(pipeExpression, null);
       return rows.map((row) => ({ ...row }));
     } finally {
       this.currentLetBindings = previousBindings;
@@ -594,13 +536,12 @@ export class KustoInterpreter {
       throw new Error('Unsupported materialize() tabular expression in let assignment.');
     }
 
-    const queryAst = parsePipeExpressionToQueryAst(materializedPipeExpression, this.parserOptions);
     const previousBindings = this.currentLetBindings;
     const previousTableBindings = this.currentLetTableBindings;
     this.currentLetBindings = letBindings;
     this.currentLetTableBindings = letTableBindings;
     try {
-      const rows = this.executeQueryAst(queryAst);
+      const rows = this.executePipeExpression(materializedPipeExpression, null);
       return rows.map((row) => ({ ...row }));
     } finally {
       this.currentLetBindings = previousBindings;
@@ -784,8 +725,8 @@ export class KustoInterpreter {
     return this.createRowsFromDataTableExpression(dataTableExpression);
   }
 
-  private getQueryResultColumnTypes(query: QueryAst, rows: KustoRow[]): Record<string, string> | undefined {
-    const sourceTypes = this.getQuerySourceColumnTypes(query.source);
+  private getQueryResultColumnTypes(pipeExpression: PipeExpressionContext, rows: KustoRow[]): Record<string, string> | undefined {
+    const sourceTypes = this.getQuerySourceColumnTypes(pipeExpression);
     if (!sourceTypes) {
       return undefined;
     }
@@ -858,16 +799,18 @@ export class KustoInterpreter {
     }
   }
 
-  private getQuerySourceColumnTypes(source: QueryAst['source']): Map<string, string> | null {
-    if (source.kind === 'table') {
-      return this.schemaTypes.get(this.normalizeName(source.name)) ?? null;
+  private getQuerySourceColumnTypes(pipeExpression: PipeExpressionContext): Map<string, string> | null {
+    const sourceExpression = pipeExpression.beforePipeExpression().unnamedExpression();
+    if (!sourceExpression) {
+      return null;
     }
 
-    if (source.kind === 'datatable') {
-      return this.getDataTableColumnTypes(source.expressionText);
+    const sourceText = sourceExpression.getText().trim();
+    if (sourceText.toLowerCase().startsWith('datatable')) {
+      return this.getDataTableColumnTypes(sourceText);
     }
 
-    return null;
+    return this.schemaTypes.get(this.normalizeName(sourceText)) ?? null;
   }
 
   private getDataTableColumnTypes(expressionText: string): Map<string, string> | null {
@@ -910,18 +853,13 @@ export class KustoInterpreter {
     }
   }
 
-  private executeQueryAst(query: QueryAst): KustoRow[] {
-    return executeQueryAstInternal(query, this.queryExecutionHandlers);
+  private executePipeExpression(pipeExpression: PipeExpressionContext, rawCommand: string | null): KustoRow[] {
+    return executePipeExpression(pipeExpression, rawCommand, this.queryExecutionHandlers);
   }
 
-  private evaluateToScalarExpression(toScalarExpression: unknown): KustoScalar {
-    const expression = toScalarExpression as {
-      pipeExpression(): unknown;
-    };
-
-    const pipeExpression = expression.pipeExpression();
-    const queryAst = parsePipeExpressionToQueryAst(pipeExpression, this.parserOptions);
-    const rows = this.executeQueryAst(queryAst);
+  private evaluateToScalarExpression(toScalarExpression: ToScalarExpressionContext): KustoScalar {
+    const pipeExpression = toScalarExpression.pipeExpression();
+    const rows = this.executePipeExpression(pipeExpression, null);
     if (rows.length === 0) {
       return null;
     }
@@ -935,9 +873,8 @@ export class KustoInterpreter {
     return this.normalizeScalar(firstRow[firstColumnName]);
   }
 
-  private async executeManagementCommand(commandAst: CommandAst & { kind: 'management' }): Promise<KustoRow[]> {
-    const command = commandAst.command;
-    const parsed = commandAst;
+  private async executeManagementCommand(parsed: ReturnType<typeof extractManagementCommandFields>): Promise<KustoRow[]> {
+    const command = parsed.command;
 
     if (parsed.commandName === 'create') {
       if (!parsed.tableName || parsed.schemaText === null) {
@@ -1510,20 +1447,21 @@ export class KustoInterpreter {
     return rows.filter((row) => Boolean(this.evaluateUnnamedExpression(predicateExpression, row)));
   }
 
-  private applyExtendAst(rows: KustoRow[], expressions: NamedExpressionAst[]): KustoRow[] {
+  private applyExtendAst(rows: KustoRow[], expressions: NamedExpressionContext[]): KustoRow[] {
     return rows.map((row) => {
       const next = { ...row };
 
       for (const expression of expressions) {
-        if (!expression.alias) {
-          throw new Error(`Invalid extend expression: ${(expression.expression as { getText(): string }).getText()}`);
+        const alias = getAlias(expression);
+        if (!alias) {
+          throw new Error(`Invalid extend expression: ${expression.unnamedExpression().getText()}`);
         }
 
-        const value = this.evaluateUnnamedExpression(expression.expression, next);
+        const value = this.evaluateUnnamedExpression(expression.unnamedExpression(), next);
         if (Array.isArray(value)) {
-          next[expression.alias] = value as unknown as KustoScalar;
+          next[alias] = value;
         } else {
-          next[expression.alias] = this.normalizeScalar(value);
+          next[alias] = this.normalizeScalar(value);
         }
       }
 
@@ -1531,13 +1469,13 @@ export class KustoInterpreter {
     });
   }
 
-  private applyProjectAst(rows: KustoRow[], expressions: NamedExpressionAst[]): KustoRow[] {
+  private applyProjectAst(rows: KustoRow[], expressions: NamedExpressionContext[]): KustoRow[] {
     return rows.map((row) => {
       const projected: KustoRow = {};
 
       for (const expression of expressions) {
-        const value = this.normalizeScalar(this.evaluateUnnamedExpression(expression.expression, row));
-        const name = expression.alias ?? (expression.expression as { getText(): string }).getText();
+        const value = this.normalizeScalar(this.evaluateUnnamedExpression(expression.unnamedExpression(), row));
+        const name = getAlias(expression) ?? expression.unnamedExpression().getText();
         projected[name] = value;
       }
 
@@ -1572,21 +1510,22 @@ export class KustoInterpreter {
     });
   }
 
-  private applyProjectRenameAst(rows: KustoRow[], expressions: NamedExpressionAst[]): KustoRow[] {
+  private applyProjectRenameAst(rows: KustoRow[], expressions: NamedExpressionContext[]): KustoRow[] {
     return rows.map((row) => {
       const next = { ...row };
       for (const expression of expressions) {
-        if (!expression.alias) {
-          throw new Error(`Invalid project-rename expression: ${(expression.expression as { getText(): string }).getText()}`);
+        const alias = getAlias(expression);
+        if (!alias) {
+          throw new Error(`Invalid project-rename expression: ${expression.unnamedExpression().getText()}`);
         }
 
-        const sourceName = (expression.expression as { getText(): string }).getText();
+        const sourceName = expression.unnamedExpression().getText();
         const value = Object.hasOwn(next, sourceName) ? next[sourceName] : null;
-        if (sourceName !== expression.alias) {
+        if (sourceName !== alias) {
           delete next[sourceName];
         }
 
-        next[expression.alias] = value;
+        next[alias] = value;
       }
 
       return next;
@@ -1597,7 +1536,7 @@ export class KustoInterpreter {
     return [{ Count: rows.length }];
   }
 
-  private applyDistinctAst(rows: KustoRow[], includeAllColumns: boolean, expressions: NamedExpressionAst[]): KustoRow[] {
+  private applyDistinctAst(rows: KustoRow[], includeAllColumns: boolean, expressions: NamedExpressionContext[]): KustoRow[] {
     const seen = new Set<string>();
     const distinctRows: KustoRow[] = [];
 
@@ -1608,8 +1547,8 @@ export class KustoInterpreter {
       } else {
         projected = {};
         for (const expression of expressions) {
-          const value = this.normalizeScalar(this.evaluateUnnamedExpression(expression.expression, row));
-          const name = expression.alias ?? (expression.expression as { getText(): string }).getText();
+          const value = this.normalizeScalar(this.evaluateUnnamedExpression(expression.unnamedExpression(), row));
+          const name = getAlias(expression) ?? expression.unnamedExpression().getText();
           projected[name] = value;
         }
       }
@@ -1624,7 +1563,7 @@ export class KustoInterpreter {
     return distinctRows;
   }
 
-  private applySortAst(rows: KustoRow[], expressions: OrderedExpressionAst[]): KustoRow[] {
+  private applySortAst(rows: KustoRow[], expressions: OrderedExpressionContext[]): KustoRow[] {
     if (expressions.length === 0) {
       return rows;
     }
@@ -1632,12 +1571,12 @@ export class KustoInterpreter {
     const sorted = [...rows];
     sorted.sort((left, right) => {
       for (const expression of expressions) {
-        const leftValue = this.evaluateUnnamedExpression(expression.expression.expression, left);
-        const rightValue = this.evaluateUnnamedExpression(expression.expression.expression, right);
+        const leftValue = this.evaluateUnnamedExpression(expression.namedExpression().unnamedExpression(), left);
+        const rightValue = this.evaluateUnnamedExpression(expression.namedExpression().unnamedExpression(), right);
 
         const comparison = this.compareValues(leftValue, rightValue);
         if (comparison !== 0) {
-          return expression.descending ? -comparison : comparison;
+          return isDescending(expression) ? -comparison : comparison;
         }
       }
 
@@ -1647,7 +1586,7 @@ export class KustoInterpreter {
     return sorted;
   }
 
-  private applyTopAst(rows: KustoRow[], amountExpression: UnnamedExpressionContext, by: OrderedExpressionAst): KustoRow[] {
+  private applyTopAst(rows: KustoRow[], amountExpression: UnnamedExpressionContext, by: OrderedExpressionContext): KustoRow[] {
     const amount = Number(this.evaluateUnnamedExpression(amountExpression, {}));
     if (!Number.isFinite(amount) || !Number.isInteger(amount) || amount < 0) {
       throw new Error(`Invalid top value: ${String(amount)}`);
@@ -1657,7 +1596,7 @@ export class KustoInterpreter {
     return sorted.slice(0, amount);
   }
 
-  private applyMvExpandAst(rows: KustoRow[], expressions: NamedExpressionAst[], limit: number | null): KustoRow[] {
+  private applyMvExpandAst(rows: KustoRow[], expressions: NamedExpressionContext[], limit: number | null): KustoRow[] {
     if (expressions.length === 0) {
       return rows;
     }
@@ -1667,8 +1606,8 @@ export class KustoInterpreter {
     for (const expression of expressions) {
       const nextRows: KustoRow[] = [];
       for (const row of expandedRows) {
-        const value = this.evaluateUnnamedExpression(expression.expression, row);
-        const columnName = expression.alias ?? (expression.expression as { getText(): string }).getText();
+        const value = this.evaluateUnnamedExpression(expression.unnamedExpression(), row);
+        const columnName = getAlias(expression) ?? expression.unnamedExpression().getText();
 
         if (Array.isArray(value)) {
           const values = limit === null ? value : value.slice(0, limit);
@@ -1702,15 +1641,15 @@ export class KustoInterpreter {
     rows: KustoRow[],
     aggregations: Array<{
       functionName: 'count' | 'sum' | 'avg' | 'min' | 'max';
-      valueExpression: NamedExpressionAst | null;
+      valueExpression: NamedExpressionContext | null;
       alias: string | null;
-      defaultExpression: NamedExpressionAst | null;
+      defaultExpression: NamedExpressionContext | null;
     }>,
-    on: NamedExpressionAst,
+    on: NamedExpressionContext,
     fromExpression: UnnamedExpressionContext,
     toExpression: UnnamedExpressionContext,
     stepExpression: UnnamedExpressionContext,
-    by: NamedExpressionAst[],
+    by: NamedExpressionContext[],
   ): KustoRow[] {
     if (aggregations.length === 0) {
       throw new Error('make-series requires at least one aggregation.');
@@ -1771,14 +1710,14 @@ export class KustoInterpreter {
       };
     }
 
-    const onColumnName = on.alias ?? (on.expression as { getText(): string }).getText();
+    const onColumnName = getAlias(on) ?? on.unnamedExpression().getText();
     const groups = new Map<string, { byRow: KustoRow; bins: KustoRow[][] }>();
 
     for (const row of rows) {
       const byRow: KustoRow = {};
       for (const expression of by) {
-        const value = this.normalizeScalar(this.evaluateUnnamedExpression(expression.expression, row));
-        const name = expression.alias ?? (expression.expression as { getText(): string }).getText();
+        const value = this.normalizeScalar(this.evaluateUnnamedExpression(expression.unnamedExpression(), row));
+        const name = getAlias(expression) ?? expression.unnamedExpression().getText();
         byRow[name] = value;
       }
 
@@ -1788,7 +1727,7 @@ export class KustoInterpreter {
         bins: Array.from({ length: labels.length }, () => [] as KustoRow[]),
       };
 
-      const index = mapToIndex(this.normalizeScalar(this.evaluateUnnamedExpression(on.expression, row)));
+      const index = mapToIndex(this.normalizeScalar(this.evaluateUnnamedExpression(on.unnamedExpression(), row)));
       if (index !== null) {
         existing.bins[index].push(row);
       }
@@ -1810,10 +1749,10 @@ export class KustoInterpreter {
       for (const aggregation of aggregations) {
         const columnName = aggregation.alias
           ?? (aggregation.valueExpression
-            ? `${aggregation.functionName}_${(aggregation.valueExpression.expression as { getText(): string }).getText()}`
+            ? `${aggregation.functionName}_${aggregation.valueExpression.unnamedExpression().getText()}`
             : `${aggregation.functionName}_`);
         const defaultValue = aggregation.defaultExpression
-          ? this.normalizeScalar(this.evaluateUnnamedExpression(aggregation.defaultExpression.expression, {}))
+          ? this.normalizeScalar(this.evaluateUnnamedExpression(aggregation.defaultExpression.unnamedExpression(), {}))
           : null;
 
         const values = group.bins.map((binRows) => {
@@ -1830,7 +1769,7 @@ export class KustoInterpreter {
           }
 
           const valuesInBin = binRows
-            .map((binRow) => this.normalizeScalar(this.evaluateUnnamedExpression(aggregation.valueExpression!.expression, binRow)))
+            .map((binRow) => this.normalizeScalar(this.evaluateUnnamedExpression(aggregation.valueExpression!.unnamedExpression(), binRow)))
             .filter((value) => value !== null);
 
           if (valuesInBin.length === 0) {
@@ -1884,10 +1823,10 @@ export class KustoInterpreter {
           return maxValue ?? defaultValue;
         });
 
-        nextRow[columnName] = values as unknown as KustoScalar;
+        nextRow[columnName] = values;
       }
 
-      nextRow[onColumnName] = labels as unknown as KustoScalar;
+      nextRow[onColumnName] = labels;
 
       results.push(nextRow);
     }
@@ -1895,7 +1834,7 @@ export class KustoInterpreter {
     return results;
   }
 
-  private applySummarizeAst(rows: KustoRow[], aggregations: NamedExpressionAst[], by: NamedExpressionAst[]): KustoRow[] {
+  private applySummarizeAst(rows: KustoRow[], aggregations: NamedExpressionContext[], by: NamedExpressionContext[]): KustoRow[] {
     return this.summarizeOperator.apply(rows, aggregations, by);
   }
 
@@ -1931,61 +1870,24 @@ export class KustoInterpreter {
     return leftText.localeCompare(rightText);
   }
 
-  private applyUnionAst(rows: KustoRow[], sources: TabularSourceAst[]): KustoRow[] {
-    return this.tabularOperators.applyUnion(rows, sources);
-  }
-
-  private applyJoinAst(
-    leftRows: KustoRow[],
-    joinKind: 'inner' | 'leftouter',
-    rightSource: TabularSourceAst,
-    onExpressions: string[],
-  ): KustoRow[] {
-    return this.tabularOperators.applyJoin(leftRows, joinKind, rightSource, onExpressions);
-  }
-
-  private applyLookupAst(
-    leftRows: KustoRow[],
-    lookupKind: 'inner' | 'leftouter',
-    rightSource: TabularSourceAst,
-    onExpressions: string[],
-  ): KustoRow[] {
-    return this.tabularOperators.applyLookup(leftRows, lookupKind, rightSource, onExpressions);
-  }
-
   private applyPartitionAst(
     rows: KustoRow[],
     byExpression: EntityExpressionContext,
-    subExpressionOperators: QueryOperatorAst[],
+    subExpressionOperators: AfterPipeOperatorContext[],
   ): KustoRow[] {
     return this.tabularOperators.applyPartition(rows, byExpression, subExpressionOperators);
   }
 
-  private resolveUnionRows(sources: TabularSourceAst[]): KustoRow[] {
-    const rows: KustoRow[] = [];
-    for (const source of sources) {
-      rows.push(...this.resolveTabularSourceRows(source));
+  private createPrintRows(expressions: NamedExpressionContext[]): KustoRow[] {
+    const row: KustoRow = {};
+    for (let index = 0; index < expressions.length; index++) {
+      const expression = expressions[index];
+      const name = getAlias(expression) ?? `print_${index}`;
+      const value = this.normalizeScalar(this.evaluateUnnamedExpression(expression.unnamedExpression(), {}));
+      row[name] = value;
     }
 
-    return rows;
-  }
-
-  private resolveTabularSourceRows(source: TabularSourceAst): KustoRow[] {
-    if (source.kind === 'table') {
-      return this.getQuerySourceRows(source.name);
-    }
-
-    return this.executeQueryAst(source.query);
-  }
-
-  private createPrintRows(expressions: NamedExpressionAst[]): KustoRow[] {
-    // Kusto assigns deterministic names for unnamed print expressions.
-    const normalizedExpressions = expressions.map((expression, index) => ({
-      ...expression,
-      alias: expression.alias ?? `print_${index}`,
-    }));
-
-    return this.applyProjectAst([{}], normalizedExpressions);
+    return [row];
   }
 
   private evaluateUnnamedExpression(unnamedExpression: UnnamedExpressionContext, row: KustoRow): KustoScalar {
@@ -2128,11 +2030,11 @@ export class KustoInterpreter {
     }
 
     if (Array.isArray(value)) {
-      return value as unknown as KustoScalar;
+      return value;
     }
 
     if (typeof value === 'object') {
-      return value as unknown as KustoScalar;
+      return value as KustoScalar;
     }
 
     return String(value);

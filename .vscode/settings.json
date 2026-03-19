@@ -7,6 +7,31 @@
         "/^node --run test$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^node --run build && node --run test 2>&1 \\| tail -20$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "npx tsc": true,
+        "/^node --run test 2>&1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^node --run test 2>&1 \\| tail -20$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^node --run build 2>&1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^node --run test 2>&1 \\| tail -10$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^node --run test 2>&1 \\| tail -15$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }

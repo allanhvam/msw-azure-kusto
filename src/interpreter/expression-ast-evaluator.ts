@@ -1,5 +1,19 @@
 import { getRowIngestionTime } from './ingestion-time.js';
-import type { UnnamedExpressionContext } from '../parser/KqlParser.js';
+import type {
+  AdditiveExpressionContext,
+  DotCompositeFunctionCallExpressionContext,
+  EqualityExpressionContext,
+  FunctionCallOrPathExpressionContext,
+  FunctionCallOrPathRootContext,
+  InvocationExpressionContext,
+  LogicalAndExpressionContext,
+  LogicalOrExpressionContext,
+  MultiplicativeExpressionContext,
+  RelationalExpressionContext,
+  StringOperatorExpressionContext,
+  ToScalarExpressionContext,
+  UnnamedExpressionContext,
+} from '../parser/KqlParser.js';
 import type { KustoRow, KustoScalar } from './types.js';
 
 export type ExpressionAstEvaluatorOptions = {
@@ -7,7 +21,7 @@ export type ExpressionAstEvaluatorOptions = {
   normalizeScalar: (value: unknown) => KustoScalar;
   compareValues: (left: KustoScalar, right: KustoScalar) => number;
   resolveLetScalar: (name: string) => KustoScalar | undefined;
-  evaluateToScalarExpression: (toScalarExpression: unknown) => KustoScalar;
+  evaluateToScalarExpression: (toScalarExpression: ToScalarExpressionContext) => KustoScalar;
 };
 
 export class ExpressionAstEvaluator {
@@ -18,10 +32,7 @@ export class ExpressionAstEvaluator {
   }
 
   public evaluateUnnamedExpression(unnamedExpression: UnnamedExpressionContext, row: KustoRow): KustoScalar {
-    return this.evaluateLogicalOrExpression(
-      (unnamedExpression as { logicalOrExpression(): unknown }).logicalOrExpression(),
-      row,
-    );
+    return this.evaluateLogicalOrExpression(unnamedExpression.logicalOrExpression(), row);
   }
 
   public createRangeRows(
@@ -61,12 +72,7 @@ export class ExpressionAstEvaluator {
     throw new Error('Unsupported range expression values.');
   }
 
-  private evaluateLogicalOrExpression(logicalOrExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = logicalOrExpression as {
-      logicalAndExpression(): unknown;
-      logicalOrOperation(): Array<{ logicalAndExpression(): unknown }>;
-    };
-
+  private evaluateLogicalOrExpression(expression: LogicalOrExpressionContext, row: KustoRow): KustoScalar {
     const operations = expression.logicalOrOperation();
     if (operations.length === 0) {
       return this.evaluateLogicalAndExpression(expression.logicalAndExpression(), row);
@@ -80,12 +86,7 @@ export class ExpressionAstEvaluator {
     return value;
   }
 
-  private evaluateLogicalAndExpression(logicalAndExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = logicalAndExpression as {
-      equalityExpression(): unknown;
-      logicalAndOperation(): Array<{ equalityExpression(): unknown }>;
-    };
-
+  private evaluateLogicalAndExpression(expression: LogicalAndExpressionContext, row: KustoRow): KustoScalar {
     const operations = expression.logicalAndOperation();
     if (operations.length === 0) {
       return this.evaluateEqualityExpression(expression.equalityExpression(), row);
@@ -99,34 +100,7 @@ export class ExpressionAstEvaluator {
     return value;
   }
 
-  private evaluateEqualityExpression(equalityExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = equalityExpression as {
-      relationalExpression(): unknown | null;
-      listEqualityExpression():
-        | {
-            relationalExpression(): unknown;
-            invocationExpression(): unknown[];
-            IN(): unknown | null;
-            NOT_IN(): unknown | null;
-            IN_CI(): unknown | null;
-            NOT_IN_CI(): unknown | null;
-          }
-        | null;
-      betweenEqualityExpression():
-        | {
-            relationalExpression(): unknown;
-            invocationExpression(): [unknown, unknown];
-            BETWEEN(): unknown | null;
-            NOT_BETWEEN(): unknown | null;
-          }
-        | null;
-      equalsEqualityExpression():
-        | {
-            relationalExpression(): [unknown, unknown];
-            EQUALEQUAL(): unknown | null;
-          }
-        | null;
-    };
+  private evaluateEqualityExpression(expression: EqualityExpressionContext, row: KustoRow): KustoScalar {
 
     const list = expression.listEqualityExpression();
     if (list) {
@@ -148,7 +122,8 @@ export class ExpressionAstEvaluator {
     const between = expression.betweenEqualityExpression();
     if (between) {
       const leftValue = this.evaluateRelationalExpression(between.relationalExpression(), row);
-      const [startExpression, endExpression] = between.invocationExpression();
+      const startExpression = between.invocationExpression(0)!;
+      const endExpression = between.invocationExpression(1)!;
       const startValue = this.evaluateInvocationExpression(startExpression, row);
       const endValue = this.evaluateInvocationExpression(endExpression, row);
       const leftDate = this.toDate(leftValue);
@@ -163,9 +138,8 @@ export class ExpressionAstEvaluator {
 
     const equals = expression.equalsEqualityExpression();
     if (equals) {
-      const [left, right] = equals.relationalExpression();
-      const leftValue = this.evaluateRelationalExpression(left, row);
-      const rightValue = this.evaluateRelationalExpression(right, row);
+      const leftValue = this.evaluateRelationalExpression(equals.relationalExpression(0)!, row);
+      const rightValue = this.evaluateRelationalExpression(equals.relationalExpression(1)!, row);
       const isEqual = this.compareScalars(leftValue, rightValue) === 0;
       return equals.EQUALEQUAL() ? isEqual : !isEqual;
     }
@@ -178,15 +152,7 @@ export class ExpressionAstEvaluator {
     throw new Error('Unsupported equality expression.');
   }
 
-  private evaluateRelationalExpression(relationalExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = relationalExpression as {
-      additiveExpression(): unknown[];
-      LESSTHAN(): unknown | null;
-      GREATERTHAN(): unknown | null;
-      LESSTHAN_EQUAL(): unknown | null;
-      GREATERTHAN_EQUAL(): unknown | null;
-    };
-
+  private evaluateRelationalExpression(expression: RelationalExpressionContext, row: KustoRow): KustoScalar {
     const additiveExpressions = expression.additiveExpression();
     const leftValue = this.evaluateAdditiveExpression(additiveExpressions[0], row);
     if (additiveExpressions.length === 1) {
@@ -214,15 +180,7 @@ export class ExpressionAstEvaluator {
     throw new Error('Unsupported relational expression.');
   }
 
-  private evaluateAdditiveExpression(additiveExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = additiveExpression as {
-      multiplicativeExpression(): unknown;
-      additiveOperation(): Array<{
-        PLUS(): unknown | null;
-        multiplicativeExpression(): unknown;
-      }>;
-    };
-
+  private evaluateAdditiveExpression(expression: AdditiveExpressionContext, row: KustoRow): KustoScalar {
     const operations = expression.additiveOperation();
     if (operations.length === 0) {
       return this.evaluateMultiplicativeExpression(expression.multiplicativeExpression(), row);
@@ -237,16 +195,7 @@ export class ExpressionAstEvaluator {
     return value;
   }
 
-  private evaluateMultiplicativeExpression(multiplicativeExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = multiplicativeExpression as {
-      stringOperatorExpression(): { getText(): string };
-      multiplicativeOperation(): Array<{
-        ASTERISK(): unknown | null;
-        SLASH(): unknown | null;
-        stringOperatorExpression(): { getText(): string };
-      }>;
-    };
-
+  private evaluateMultiplicativeExpression(expression: MultiplicativeExpressionContext, row: KustoRow): KustoScalar {
     const operations = expression.multiplicativeOperation();
     if (operations.length === 0) {
       return this.evaluateStringOperatorExpression(expression.stringOperatorExpression(), row);
@@ -294,26 +243,7 @@ export class ExpressionAstEvaluator {
     return false;
   }
 
-  private evaluateStringOperatorExpression(stringOperatorExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = stringOperatorExpression as {
-      stringBinaryOperatorExpression():
-        | {
-            invocationExpression(): unknown;
-            stringBinaryOperation():
-              | {
-                  invocationExpression(): unknown;
-                  stringBinaryOperator(): { getText(): string } | null;
-                }
-              | null;
-          }
-        | null;
-      stringStarOperatorExpression():
-        | {
-            stringBinaryOperator(): { getText(): string };
-            invocationExpression(): unknown;
-          }
-        | null;
-    };
+  private evaluateStringOperatorExpression(expression: StringOperatorExpressionContext, row: KustoRow): KustoScalar {
 
     const binaryExpression = expression.stringBinaryOperatorExpression();
     if (binaryExpression) {
@@ -447,12 +377,7 @@ export class ExpressionAstEvaluator {
     }
   }
 
-  private evaluateInvocationExpression(invocationExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = invocationExpression as {
-      PLUS(): unknown | null;
-      DASH(): unknown | null;
-      functionCallOrPathExpression(): unknown;
-    };
+  private evaluateInvocationExpression(expression: InvocationExpressionContext, row: KustoRow): KustoScalar {
 
     const value = this.evaluateFunctionCallOrPathExpression(expression.functionCallOrPathExpression(), row);
     if (expression.PLUS()) {
@@ -466,28 +391,7 @@ export class ExpressionAstEvaluator {
     return value;
   }
 
-  private evaluateFunctionCallOrPathExpression(functionCallOrPathExpression: unknown, row: KustoRow): KustoScalar {
-    const expression = functionCallOrPathExpression as {
-      functionCallOrPathRoot(): unknown | null;
-      functionCallOrPathPathExpression():
-        | {
-            functionCallOrPathRoot(): unknown;
-            functionCallOrPathOperation(): Array<{
-              functionCallOrPathPathOperation():
-                | {
-                    identifierOrKeywordOrEscapedName(): { getText(): string };
-                  }
-                | null;
-              functionCallOrPathElementOperation():
-                | {
-                    unnamedExpression(): UnnamedExpressionContext;
-                  }
-                | null;
-            }>;
-          }
-        | null;
-      toTableExpression(): unknown | null;
-    };
+  private evaluateFunctionCallOrPathExpression(expression: FunctionCallOrPathExpressionContext, row: KustoRow): KustoScalar {
 
     if (expression.toTableExpression()) {
       throw new Error('toTable() is not supported.');
@@ -500,7 +404,7 @@ export class ExpressionAstEvaluator {
         current = this.coerceDynamicContainer(current);
         const pathOperation = operation.functionCallOrPathPathOperation();
         if (pathOperation) {
-          const name = pathOperation.identifierOrKeywordOrEscapedName().getText();
+          const name = pathOperation.identifierOrKeywordOrEscapedName()!.getText();
           if (current && typeof current === 'object') {
             current = (current as Record<string, unknown>)[name];
             continue;
@@ -511,7 +415,7 @@ export class ExpressionAstEvaluator {
 
         const elementOperation = operation.functionCallOrPathElementOperation();
         if (elementOperation) {
-          const index = this.evaluateUnnamedExpression(elementOperation.unnamedExpression(), row);
+          const index = this.evaluateUnnamedExpression(elementOperation.unnamedExpression()!, row);
           if (Array.isArray(current)) {
             current = current[Number(index)];
             continue;
@@ -537,33 +441,7 @@ export class ExpressionAstEvaluator {
     return this.evaluateFunctionCallOrPathRoot(root, row);
   }
 
-  private evaluateFunctionCallOrPathRoot(functionCallOrPathRoot: unknown, row: KustoRow): KustoScalar {
-    const root = functionCallOrPathRoot as {
-      primaryExpression():
-        | {
-            unsignedLiteralExpression(): unknown | null;
-            nameReferenceWithDataScope():
-              | {
-                  simpleNameReference(): { getText(): string };
-                }
-              | null;
-            parenthesizedExpression():
-              | {
-                  expression(): {
-                    pipeExpression(): {
-                      beforePipeExpression(): {
-                        unnamedExpression(): UnnamedExpressionContext | null;
-                      };
-                      pipedOperator(): unknown[];
-                    };
-                  };
-                }
-              | null;
-          }
-        | null;
-      dotCompositeFunctionCallExpression(): unknown | null;
-      toScalarExpression(): unknown | null;
-    };
+  private evaluateFunctionCallOrPathRoot(root: FunctionCallOrPathRootContext, row: KustoRow): KustoScalar {
 
     const functionCallExpression = root.dotCompositeFunctionCallExpression();
     if (functionCallExpression) {
@@ -582,7 +460,7 @@ export class ExpressionAstEvaluator {
 
     const literal = primary.unsignedLiteralExpression();
     if (literal) {
-      return this.options.parseScalar((literal as { getText(): string }).getText());
+      return this.options.parseScalar(literal.getText());
     }
 
     const nameReference = primary.nameReferenceWithDataScope();
@@ -615,16 +493,16 @@ export class ExpressionAstEvaluator {
       return this.evaluateUnnamedExpression(inner, row);
     }
 
-    throw new Error(`Unsupported primary expression: ${(primary as unknown as { getText(): string }).getText()}`);
+    throw new Error(`Unsupported primary expression: ${primary.getText()}`);
   }
 
   private evaluateDotCompositeFunctionCallExpression(
-    dotCompositeFunctionCallExpression: unknown,
+    dotCompositeFunctionCallExpression: DotCompositeFunctionCallExpressionContext,
     row: KustoRow,
   ): KustoScalar {
     const functionCall = this.getSimpleFunctionCall(dotCompositeFunctionCallExpression);
     if (!functionCall) {
-      throw new Error(`Unsupported function call: ${(dotCompositeFunctionCallExpression as { getText(): string }).getText()}`);
+      throw new Error(`Unsupported function call: ${dotCompositeFunctionCallExpression.getText()}`);
     }
 
     const functionName = functionCall.name.toLowerCase();
@@ -807,7 +685,7 @@ export class ExpressionAstEvaluator {
         return Number.isFinite(index) && index >= 0 && index < parts.length ? parts[index] : null;
       }
 
-      return parts as unknown as KustoScalar;
+      return parts;
     }
 
     if (functionName === 'strcat') {
@@ -946,7 +824,7 @@ export class ExpressionAstEvaluator {
       const numericSeries = series.map((value) => Number(value));
       const finiteValues = numericSeries.filter((value) => Number.isFinite(value));
       if (finiteValues.length === 0) {
-        return series.map(() => 0) as unknown as KustoScalar;
+        return series.map(() => 0);
       }
 
       const mean = finiteValues.reduce((sum, value) => sum + value, 0) / finiteValues.length;
@@ -957,7 +835,7 @@ export class ExpressionAstEvaluator {
         : 1.5;
 
       if (standardDeviation === 0) {
-        return series.map(() => 0) as unknown as KustoScalar;
+        return series.map(() => 0);
       }
 
       const anomalies = numericSeries.map((value) => {
@@ -969,7 +847,7 @@ export class ExpressionAstEvaluator {
         return zScore > zThreshold ? 1 : 0;
       });
 
-      return anomalies as unknown as KustoScalar;
+      return anomalies;
     }
 
     if (functionName === 'tostring') {
@@ -1135,35 +1013,26 @@ export class ExpressionAstEvaluator {
       return this.evaluateDateComponentFunction(functionName, argumentsValues[0]);
     }
 
-    throw new Error(`Unsupported function call: ${(dotCompositeFunctionCallExpression as { getText(): string }).getText()}`);
+    throw new Error(`Unsupported function call: ${dotCompositeFunctionCallExpression.getText()}`);
   }
 
   private getSimpleFunctionCall(
-    dotCompositeFunctionCallExpression: unknown,
+    dotCompositeFunctionCallExpression: DotCompositeFunctionCallExpressionContext,
   ): { name: string; arguments: UnnamedExpressionContext[] } | null {
-    const expression = dotCompositeFunctionCallExpression as {
-      functionCallExpression(): {
-        namedFunctionCallExpression():
-          | {
-              simpleNameReference(): { getText(): string };
-              argumentExpression(): Array<{
-                namedExpression(): { unnamedExpression(): UnnamedExpressionContext } | null;
-                starExpression(): unknown | null;
-              }>;
-            }
-          | null;
-        countExpression(): unknown | null;
-      };
-      dotCompositeFunctionCallOperation(): unknown[];
-    };
+    const expression = dotCompositeFunctionCallExpression;
 
     if (expression.dotCompositeFunctionCallOperation().length > 0) {
       return null;
     }
 
     const functionCallExpression = expression.functionCallExpression();
-    if (functionCallExpression.countExpression()) {
-      return null;
+    const countExpression = functionCallExpression.countExpression();
+    if (countExpression) {
+      const argument = countExpression.namedExpression()?.unnamedExpression();
+      return {
+        name: 'count',
+        arguments: argument ? [argument] : [],
+      };
     }
 
     const namedFunctionCall = functionCallExpression.namedFunctionCallExpression();
@@ -1317,7 +1186,7 @@ export class ExpressionAstEvaluator {
         }
       }
 
-      return values as unknown as KustoScalar;
+      return values;
     }
 
     const values: number[] = [];
@@ -1331,7 +1200,7 @@ export class ExpressionAstEvaluator {
       }
     }
 
-    return values as unknown as KustoScalar;
+    return values;
   }
 
   private evaluateToDoubleFunction(value: KustoScalar): KustoScalar {
@@ -1631,4 +1500,117 @@ export class ExpressionAstEvaluator {
     anchor.setUTCHours(0, 0, 0, 0);
     return anchor.getTime();
   }
+}
+
+/**
+ * Extracts a simple function call (name + arguments) from an UnnamedExpressionContext
+ * by traversing the expression tree down to DotCompositeFunctionCallExpressionContext.
+ * Returns null if the expression is not a simple function call.
+ */
+export function tryExtractFunctionCall(
+  unnamedExpression: UnnamedExpressionContext,
+): { name: string; arguments: UnnamedExpressionContext[] } | null {
+  const logicalOrExpression = unnamedExpression.logicalOrExpression();
+  if (logicalOrExpression.logicalOrOperation().length > 0) {
+    return null;
+  }
+
+  const logicalAndExpression = logicalOrExpression.logicalAndExpression();
+  if (logicalAndExpression.logicalAndOperation().length > 0) {
+    return null;
+  }
+
+  const equalityExpression = logicalAndExpression.equalityExpression();
+  if (equalityExpression.equalsEqualityExpression()) {
+    return null;
+  }
+
+  const relationalExpression = equalityExpression.relationalExpression();
+  if (
+    !relationalExpression
+    || relationalExpression.LESSTHAN()
+    || relationalExpression.GREATERTHAN()
+    || relationalExpression.LESSTHAN_EQUAL()
+    || relationalExpression.GREATERTHAN_EQUAL()
+  ) {
+    return null;
+  }
+
+  const additiveExpressions = relationalExpression.additiveExpression();
+  if (additiveExpressions.length !== 1) {
+    return null;
+  }
+
+  const additiveExpression = additiveExpressions[0];
+  if (additiveExpression.additiveOperation().length > 0) {
+    return null;
+  }
+
+  const multiplicativeExpression = additiveExpression.multiplicativeExpression();
+  if (multiplicativeExpression.multiplicativeOperation().length > 0) {
+    return null;
+  }
+
+  const stringOperatorExpression = multiplicativeExpression.stringOperatorExpression();
+  if (stringOperatorExpression.stringStarOperatorExpression()) {
+    return null;
+  }
+
+  const binary = stringOperatorExpression.stringBinaryOperatorExpression();
+  if (!binary || binary.stringBinaryOperation()) {
+    return null;
+  }
+
+  const invocationExpression = binary.invocationExpression();
+  if (invocationExpression.PLUS() || invocationExpression.DASH()) {
+    return null;
+  }
+
+  const functionCallOrPathExpression = invocationExpression.functionCallOrPathExpression();
+  if (functionCallOrPathExpression.toTableExpression() || functionCallOrPathExpression.functionCallOrPathPathExpression()) {
+    return null;
+  }
+
+  const root = functionCallOrPathExpression.functionCallOrPathRoot();
+  if (!root || root.primaryExpression() || root.toScalarExpression()) {
+    return null;
+  }
+
+  const dotFunctionCall = root.dotCompositeFunctionCallExpression();
+  if (!dotFunctionCall || dotFunctionCall.dotCompositeFunctionCallOperation().length > 0) {
+    return null;
+  }
+
+  const functionCall = dotFunctionCall.functionCallExpression();
+  const countExpression = functionCall.countExpression();
+  if (countExpression) {
+    const argument = countExpression.namedExpression()?.unnamedExpression();
+    return {
+      name: 'count',
+      arguments: argument ? [argument] : [],
+    };
+  }
+
+  const namedFunctionCall = functionCall.namedFunctionCallExpression();
+  if (!namedFunctionCall) {
+    return null;
+  }
+
+  const argumentsList = namedFunctionCall.argumentExpression().map((argumentExpression) => {
+    if (argumentExpression.starExpression()) {
+      return null;
+    }
+
+    const namedExpression = argumentExpression.namedExpression();
+    return namedExpression?.unnamedExpression() ?? null;
+  });
+
+  if (argumentsList.some((arg) => arg === null)) {
+    return null;
+  }
+
+  return {
+    name: namedFunctionCall.simpleNameReference().getText(),
+    arguments: argumentsList as UnnamedExpressionContext[],
+  };
 }
