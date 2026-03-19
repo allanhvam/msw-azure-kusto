@@ -1,18 +1,29 @@
 import * as antlr from 'antlr4ng';
 import { KqlLexer } from '../parser/KqlLexer.js';
 import type {
+  EntityNameReferenceContext,
   ManagementCommandExpressionContext,
+  ManagementDropTableBodyContext,
+  ManagementGenericBodyContext,
+  ManagementIngestFromUriBodyContext,
+  ManagementIngestInlineBodyContext,
+  ManagementShowBodyContext,
+  ManagementTableTargetBodyContext,
+  ManagementTableWithSchemaBodyContext,
   NamedExpressionContext,
   OrderedExpressionContext,
+  ParenthesizedExpressionContext,
   PipeExpressionContext,
   QueryStatementContext,
   RelaxedQueryOperatorParameterContext,
   StatementContext,
   UnionOperatorExpressionContext,
-  UnnamedExpressionContext} from '../parser/KqlParser.js';
+  UnnamedExpressionContext,
+  WildcardedEntityExpressionContext} from '../parser/KqlParser.js';
 import {
   KqlParser,
 } from '../parser/KqlParser.js';
+import { KqlVisitor } from '../parser/KqlVisitor.js';
 import type { KustoRow } from './types.js';
 
 export type QueryAstParserOptions = {
@@ -32,68 +43,94 @@ export function getQueryStatementPipeExpression(queryStatement: QueryStatementCo
   return queryStatement.expression().pipeExpression();
 }
 
+type ManagementBodyFields = {
+  tableName: string | null;
+  schemaText: string | null;
+  argumentTokens: string[];
+  argumentsText: string;
+  fromQueryPayload: string | null;
+};
+
+const defaultBodyFields: ManagementBodyFields = {
+  tableName: null,
+  schemaText: null,
+  argumentTokens: [],
+  argumentsText: '',
+  fromQueryPayload: null,
+};
+
+class ManagementCommandBodyExtractor extends KqlVisitor<ManagementBodyFields> {
+  private readonly rawCommand: string;
+
+  constructor(rawCommand: string) {
+    super();
+    this.rawCommand = rawCommand;
+  }
+
+  protected defaultResult(): ManagementBodyFields {
+    return { ...defaultBodyFields };
+  }
+
+  visitManagementTableWithSchemaBody = (ctx: ManagementTableWithSchemaBodyContext): ManagementBodyFields => ({
+    ...defaultBodyFields,
+    tableName: ctx.managementCommandIdentifier().getText(),
+    schemaText: ctx.managementSchemaText().getText(),
+    argumentsText: getTextFromTokenRange(this.rawCommand, ctx),
+  });
+
+  visitManagementDropTableBody = (ctx: ManagementDropTableBodyContext): ManagementBodyFields => {
+    const identifiers = ctx.managementCommandIdentifier();
+    return {
+      ...defaultBodyFields,
+      tableName: identifiers[0]?.getText() ?? null,
+      argumentTokens: identifiers.slice(1).map((id) => id.getText().toLowerCase()),
+      argumentsText: getTextFromTokenRange(this.rawCommand, ctx),
+    };
+  };
+
+  visitManagementTableTargetBody = (ctx: ManagementTableTargetBodyContext): ManagementBodyFields => ({
+    ...defaultBodyFields,
+    tableName: ctx.managementCommandIdentifier().getText(),
+    argumentTokens: ctx.managementCommandToken().map((token) => token.getText().toLowerCase()),
+    argumentsText: getTextFromTokenRange(this.rawCommand, ctx),
+  });
+
+  visitManagementShowBody = (ctx: ManagementShowBodyContext): ManagementBodyFields => ({
+    ...defaultBodyFields,
+    argumentTokens: [ctx.managementCommandIdentifier().getText().toLowerCase()],
+    argumentsText: getTextFromTokenRange(this.rawCommand, ctx),
+  });
+
+  visitManagementIngestInlineBody = (ctx: ManagementIngestInlineBodyContext): ManagementBodyFields => ({
+    ...defaultBodyFields,
+    tableName: ctx._TableName?.getText() ?? null,
+    argumentTokens: [ctx._InlineKeyword?.getText().toLowerCase() ?? 'inline'],
+    fromQueryPayload: getTextFromTokenRange(this.rawCommand, ctx.managementFromQueryPayload()),
+    argumentsText: getTextFromTokenRange(this.rawCommand, ctx),
+  });
+
+  visitManagementIngestFromUriBody = (ctx: ManagementIngestFromUriBodyContext): ManagementBodyFields => ({
+    ...defaultBodyFields,
+    tableName: ctx._TableName?.getText() ?? null,
+    argumentTokens: ['uri'],
+    fromQueryPayload: getTextFromTokenRange(this.rawCommand, ctx.managementIngestSourceText()),
+    argumentsText: getTextFromTokenRange(this.rawCommand, ctx),
+  });
+
+  visitManagementGenericBody = (ctx: ManagementGenericBodyContext): ManagementBodyFields => ({
+    ...defaultBodyFields,
+    argumentTokens: ctx.managementCommandToken().map((token) => token.getText().toLowerCase()),
+    argumentsText: getTextFromTokenRange(this.rawCommand, ctx),
+  });
+}
+
 export function extractManagementCommandFields(ctx: ManagementCommandExpressionContext, rawCommand: string) {
   const commandName = ctx.managementCommandName().getText().toLowerCase();
   const body = ctx.managementCommandBody();
+  const extractor = new ManagementCommandBodyExtractor(rawCommand);
+  const fields = body ? extractor.visit(body) ?? defaultBodyFields : defaultBodyFields;
 
-  let tableName: string | null = null;
-  let schemaText: string | null = null;
-  let argumentTokens: string[] = [];
-  let argumentsText = '';
-  let fromQueryPayload: string | null = null;
-
-  const tableWithSchemaBody = body?.managementTableWithSchemaBody() ?? null;
-  if (tableWithSchemaBody) {
-    tableName = tableWithSchemaBody.managementCommandIdentifier().getText();
-    schemaText = tableWithSchemaBody.managementSchemaText().getText();
-    argumentsText = getTextFromTokenRange(rawCommand, tableWithSchemaBody);
-  }
-
-  const dropTableBody = body?.managementDropTableBody() ?? null;
-  if (dropTableBody) {
-    const identifiers = dropTableBody.managementCommandIdentifier();
-    tableName = identifiers[0]?.getText() ?? null;
-    argumentTokens = identifiers.slice(1).map((identifier) => identifier.getText().toLowerCase());
-    argumentsText = getTextFromTokenRange(rawCommand, dropTableBody);
-  }
-
-  const tableTargetBody = body?.managementTableTargetBody() ?? null;
-  if (tableTargetBody) {
-    tableName = tableTargetBody.managementCommandIdentifier().getText();
-    argumentTokens = tableTargetBody.managementCommandToken().map((token) => token.getText().toLowerCase());
-    argumentsText = getTextFromTokenRange(rawCommand, tableTargetBody);
-  }
-
-  const showBody = body?.managementShowBody() ?? null;
-  if (showBody) {
-    argumentTokens = [showBody.managementCommandIdentifier().getText().toLowerCase()];
-    argumentsText = getTextFromTokenRange(rawCommand, showBody);
-  }
-
-  const ingestInlineBody = body?.managementIngestInlineBody() ?? null;
-  if (ingestInlineBody) {
-    tableName = ingestInlineBody._TableName?.getText() ?? null;
-    const inlineKeyword = ingestInlineBody._InlineKeyword?.getText().toLowerCase() ?? 'inline';
-    argumentTokens = [inlineKeyword];
-    fromQueryPayload = getTextFromTokenRange(rawCommand, ingestInlineBody.managementFromQueryPayload());
-    argumentsText = getTextFromTokenRange(rawCommand, ingestInlineBody);
-  }
-
-  const ingestFromUriBody = body?.managementIngestFromUriBody() ?? null;
-  if (ingestFromUriBody) {
-    tableName = ingestFromUriBody._TableName?.getText() ?? null;
-    argumentTokens = ['uri'];
-    fromQueryPayload = getTextFromTokenRange(rawCommand, ingestFromUriBody.managementIngestSourceText());
-    argumentsText = getTextFromTokenRange(rawCommand, ingestFromUriBody);
-  }
-
-  const genericBody = body?.managementGenericBody() ?? null;
-  if (genericBody) {
-    argumentTokens = genericBody.managementCommandToken().map((token) => token.getText().toLowerCase());
-    argumentsText = getTextFromTokenRange(rawCommand, genericBody);
-  }
-
-  return { command: rawCommand, commandName, argumentsText, fromQueryPayload, tableName, schemaText, argumentTokens };
+  return { command: rawCommand, commandName, ...fields };
 }
 
 function getTextFromTokenRange(
@@ -138,23 +175,22 @@ export function resolveUnionSource(
   rawCommand: string | null,
   resolver: TabularSourceResolver,
 ): KustoRow[] {
-  const entity = expression.entityNameReference();
-  if (entity) {
-    return resolver.resolveTableRows(options.normalizeName(entity.getText()));
-  }
+  const visitor = new KqlVisitor<KustoRow[]>();
 
-  const wildcarded = expression.wildcardedEntityExpression();
-  if (wildcarded) {
-    throw new Error(`Unsupported union source: ${wildcarded.getText()}`);
-  }
+  visitor.visitEntityNameReference = (ctx: EntityNameReferenceContext) => {
+    return resolver.resolveTableRows(options.normalizeName(ctx.getText()));
+  };
 
-  const parenthesized = expression.parenthesizedExpression();
-  if (parenthesized) {
-    const text = getTextFromTokenRange(rawCommand, expression).trim() || parenthesized.getText().trim();
+  visitor.visitWildcardedEntityExpression = (ctx: WildcardedEntityExpressionContext) => {
+    throw new Error(`Unsupported union source: ${ctx.getText()}`);
+  };
+
+  visitor.visitParenthesizedExpression = (ctx: ParenthesizedExpressionContext) => {
+    const text = getTextFromTokenRange(rawCommand, expression).trim() || ctx.getText().trim();
     const inner = text.startsWith('(') && text.endsWith(')') ? text.slice(1, -1).trim() : text;
 
     if (!inner) {
-      throw new Error(`Unsupported union source: ${parenthesized.getText()}`);
+      throw new Error(`Unsupported union source: ${ctx.getText()}`);
     }
 
     if (inner.includes('|')) {
@@ -162,9 +198,14 @@ export function resolveUnionSource(
     }
 
     return resolver.resolveTableRows(options.normalizeName(inner));
+  };
+
+  const result = visitor.visit(expression);
+  if (!result) {
+    throw new Error(`Unsupported union source: ${expression.getText()}`);
   }
 
-  throw new Error(`Unsupported union source: ${expression.getText()}`);
+  return result;
 }
 
 export function resolveTabularSource(

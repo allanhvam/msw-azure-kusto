@@ -11,9 +11,11 @@ import type {
   OrderedExpressionContext,
   PartitionOperatorContext,
   PipeExpressionContext,
+  PrintOperatorContext,
   ProjectAwayOperatorContext,
   ProjectOperatorContext,
   ProjectRenameOperatorContext,
+  RangeExpressionContext,
   SortOperatorContext,
   SummarizeOperatorContext,
   TakeOperatorContext,
@@ -92,44 +94,46 @@ export function executePipeExpression(
   handlers: QueryAstExecutionHandlers,
 ): KustoRow[] {
   const before = pipeExpression.beforePipeExpression();
-  let current: KustoRow[];
 
-  const rangeExpression = before.rangeExpression();
-  if (rangeExpression) {
-    const [fromExpression, toExpression, stepExpression] = rangeExpression.unnamedExpression();
-    current = handlers.resolveRangeSource(
-      rangeExpression.simpleNameReference().getText(),
+  const sourceVisitor = new KqlVisitor<KustoRow[]>();
+
+  sourceVisitor.visitRangeExpression = (ctx: RangeExpressionContext) => {
+    const [fromExpression, toExpression, stepExpression] = ctx.unnamedExpression();
+    return handlers.resolveRangeSource(
+      ctx.simpleNameReference().getText(),
       fromExpression as UnnamedExpressionContext,
       toExpression as UnnamedExpressionContext,
       stepExpression as UnnamedExpressionContext,
     );
-  } else {
-    const printOperator = before.printOperator();
-    const unionOperator = before.beforeOrAfterPipeOperator()?.unionOperator() ?? null;
-    if (printOperator) {
-      current = handlers.resolvePrintSource(printOperator.namedExpression());
-    } else if (unionOperator) {
-      const resolver = createTabularSourceResolver(handlers);
-      const unionRows: KustoRow[] = [];
-      for (const item of unionOperator.unionOperatorExpression()) {
-        unionRows.push(...resolveUnionSource(item, handlers.parserOptions, rawCommand, resolver));
-      }
-      current = unionRows;
-    } else {
-      const sourceExpression = before.unnamedExpression();
-      if (!sourceExpression) {
-        throw new Error('Unsupported query source expression.');
-      }
+  };
 
-      const sourceText = sourceExpression.getText().trim();
-      if (sourceText.toLowerCase().startsWith('datatable')) {
-        current = handlers.resolveDataTableSource(sourceText);
-      } else {
-        current = handlers.resolveTableSource(sourceText);
-      }
+  sourceVisitor.visitPrintOperator = (ctx: PrintOperatorContext) => {
+    return handlers.resolvePrintSource(ctx.namedExpression());
+  };
+
+  sourceVisitor.visitUnionOperator = (ctx: UnionOperatorContext) => {
+    const resolver = createTabularSourceResolver(handlers);
+    const unionRows: KustoRow[] = [];
+    for (const item of ctx.unionOperatorExpression()) {
+      unionRows.push(...resolveUnionSource(item, handlers.parserOptions, rawCommand, resolver));
     }
+    return unionRows;
+  };
+
+  sourceVisitor.visitUnnamedExpression = (ctx: UnnamedExpressionContext) => {
+    const sourceText = ctx.getText().trim();
+    if (sourceText.toLowerCase().startsWith('datatable')) {
+      return handlers.resolveDataTableSource(sourceText);
+    }
+    return handlers.resolveTableSource(sourceText);
+  };
+
+  const sourceRows = sourceVisitor.visit(before);
+  if (!sourceRows) {
+    throw new Error('Unsupported query source expression.');
   }
 
+  let current = sourceRows;
   for (const piped of pipeExpression.pipedOperator()) {
     current = applyOperatorContext(current, piped.afterPipeOperator(), handlers, rawCommand);
   }

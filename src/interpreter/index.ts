@@ -9,7 +9,6 @@ import {
   KqlParser,
   type DataTableExpressionContext,
   type EntityExpressionContext,
-  type LetStatementContext,
   type NamedExpressionContext,
   type OrderedExpressionContext,
   type PipeExpressionContext,
@@ -18,6 +17,7 @@ import {
   type ToScalarExpressionContext,
   type UnnamedExpressionContext,
 } from '../parser/KqlParser.js';
+import { KqlVisitor } from '../parser/KqlVisitor.js';
 import { setRowIngestionTime } from './ingestion-time.js';
 import {
   getAlias,
@@ -175,34 +175,64 @@ export class KustoInterpreter {
     let finalPipeExpression: PipeExpressionContext | null = null;
 
     for (const statement of statements) {
-      const declareQueryParametersStatement = statement.declareQueryParametersStatement();
-      if (declareQueryParametersStatement) {
-        this.executeDeclareQueryParametersStatement(declareQueryParametersStatement, letBindings);
-        continue;
-      }
-
-      const letStatement = statement.letStatement();
-      if (letStatement) {
-        this.executeLetStatement(letStatement, letBindings, letTableBindings);
-        continue;
-      }
-
-      const setStatement = statement.setStatement();
-      if (setStatement) {
-        this.executeSetStatement(setStatement);
-        continue;
-      }
-
-      const queryStatement = statement.queryStatement();
-      if (!queryStatement) {
+      const statementVisitor = new KqlVisitor<void>();
+      statementVisitor.visitDeclareQueryParametersStatement = (ctx) => {
+        this.executeDeclareQueryParametersStatement(ctx, letBindings);
+      };
+      statementVisitor.visitLetMaterializeDeclaration = (ctx) => {
+        const name = ctx.identifierOrKeywordOrEscapedName().getText();
+        const previousBindings = this.currentLetBindings;
+        const previousTableBindings = this.currentLetTableBindings;
+        this.currentLetBindings = letBindings;
+        this.currentLetTableBindings = letTableBindings;
+        try {
+          const rows = this.executePipeExpression(ctx.pipeExpression(), null).map((row) => ({ ...row }));
+          letTableBindings.set(name, rows);
+          delete letBindings[name];
+        } finally {
+          this.currentLetBindings = previousBindings;
+          this.currentLetTableBindings = previousTableBindings;
+        }
+      };
+      statementVisitor.visitLetVariableDeclaration = (ctx) => {
+        const name = ctx.identifierOrKeywordOrEscapedName().getText();
+        const pipeExpression = ctx.expression().pipeExpression();
+        const letRows = this.tryEvaluateLetTabularRows(pipeExpression, letBindings, letTableBindings);
+        if (letRows) {
+          letTableBindings.set(name, letRows);
+          delete letBindings[name];
+          return;
+        }
+        const unnamedExpression = pipeExpression.beforePipeExpression().unnamedExpression();
+        if (!unnamedExpression) {
+          throw new Error('Unsupported let variable expression.');
+        }
+        const value = this.normalizeScalar(this.evaluateUnnamedExpression(unnamedExpression, letBindings));
+        letBindings[name] = value;
+        letTableBindings.delete(name);
+      };
+      const throwUnsupportedLet = () => {
+        throw new Error('Only let variable and materialize declarations are supported.');
+      };
+      statementVisitor.visitLetFunctionDeclaration = throwUnsupportedLet;
+      statementVisitor.visitLetViewDeclaration = throwUnsupportedLet;
+      statementVisitor.visitLetEntityGroupDeclaration = throwUnsupportedLet;
+      statementVisitor.visitSetStatement = (ctx) => {
+        this.executeSetStatement(ctx);
+      };
+      statementVisitor.visitQueryStatement = (ctx) => {
+        if (finalPipeExpression !== null) {
+          throw new Error('Only one query statement is supported after let/set statements.');
+        }
+        finalPipeExpression = getQueryStatementPipeExpression(ctx);
+      };
+      const throwUnsupportedStatement = () => {
         throw new Error('Only declare query_parameters, let, set, and query statements are supported.');
-      }
-
-      if (finalPipeExpression !== null) {
-        throw new Error('Only one query statement is supported after let/set statements.');
-      }
-
-      finalPipeExpression = getQueryStatementPipeExpression(queryStatement);
+      };
+      statementVisitor.visitAliasDatabaseStatement = throwUnsupportedStatement;
+      statementVisitor.visitDeclarePatternStatement = throwUnsupportedStatement;
+      statementVisitor.visitRestrictAccessStatement = throwUnsupportedStatement;
+      statementVisitor.visit(statement);
     }
 
     if (!finalPipeExpression) {
@@ -392,56 +422,6 @@ export class KustoInterpreter {
     }
 
     return { kind: 'management', rows };
-  }
-
-  private executeLetStatement(
-    letStatement: LetStatementContext,
-    letBindings: KustoRow,
-    letTableBindings: Map<string, KustoRow[]>,
-  ): void {
-    const materializeDeclaration = letStatement.letMaterializeDeclaration();
-    if (materializeDeclaration) {
-      const name = materializeDeclaration.identifierOrKeywordOrEscapedName().getText();
-
-      const previousBindings = this.currentLetBindings;
-      const previousTableBindings = this.currentLetTableBindings;
-      this.currentLetBindings = letBindings;
-      this.currentLetTableBindings = letTableBindings;
-      try {
-        const rows = this.executePipeExpression(materializeDeclaration.pipeExpression(), null).map((row) => ({ ...row }));
-        letTableBindings.set(name, rows);
-        delete letBindings[name];
-      } finally {
-        this.currentLetBindings = previousBindings;
-        this.currentLetTableBindings = previousTableBindings;
-      }
-
-      return;
-    }
-
-    const variableDeclaration = letStatement.letVariableDeclaration();
-    if (!variableDeclaration) {
-      throw new Error('Only let variable declarations are supported.');
-    }
-
-    const name = variableDeclaration.identifierOrKeywordOrEscapedName().getText();
-    const pipeExpression = variableDeclaration.expression().pipeExpression();
-
-    const letRows = this.tryEvaluateLetTabularRows(pipeExpression, letBindings, letTableBindings);
-    if (letRows) {
-      letTableBindings.set(name, letRows);
-      delete letBindings[name];
-      return;
-    }
-
-    const unnamedExpression = pipeExpression.beforePipeExpression().unnamedExpression();
-    if (!unnamedExpression) {
-      throw new Error('Unsupported let variable expression.');
-    }
-
-    const value = this.normalizeScalar(this.evaluateUnnamedExpression(unnamedExpression, letBindings));
-    letBindings[name] = value;
-    letTableBindings.delete(name);
   }
 
   private tryEvaluateLetTabularRows(

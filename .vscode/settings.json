@@ -8,7 +8,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^node --run build && node --run test 2>&1 \\| tail -20$/": {
+        "/^node --run build && node --run test 2>&1 \\| tail -\\d+$/": {
             "approve": true,
             "matchCommandLine": true
         },
@@ -17,7 +17,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^node --run test 2>&1 \\| tail -20$/": {
+        "/^node --run test 2>&1 \\| tail -\\d+$/": {
             "approve": true,
             "matchCommandLine": true
         },
@@ -25,11 +25,11 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^node --run test 2>&1 \\| tail -10$/": {
+        "/^node --run build 2>&1 \\| head -\\d+$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^node --run test 2>&1 \\| tail -15$/": {
+        "/^npm run build && node --run test$/": {
             "approve": true,
             "matchCommandLine": true
         }
