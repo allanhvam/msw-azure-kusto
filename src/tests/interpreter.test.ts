@@ -295,6 +295,25 @@ test('drop table without ifexists fails when table is missing', async () => {
   );
 });
 
+test('shows database name with show database', async () => {
+  const interpreter = new KustoInterpreter({ databaseName: 'TestDb' });
+
+  const result = await interpreter.execute('.show database');
+
+  assert.equal(result.kind, 'management');
+  assert.deepEqual(result.rows, [{ DatabaseName: 'TestDb' }]);
+});
+
+test('shows tables with database name', async () => {
+  const interpreter = new KustoInterpreter({ databaseName: 'TestDb' });
+  await interpreter.execute('.create table Events (Id:int)');
+
+  const result = await interpreter.execute('.show tables');
+
+  assert.equal(result.kind, 'management');
+  assert.deepEqual(result.rows, [{ TableName: 'Events', DatabaseName: 'TestDb' }]);
+});
+
 test('supports let statement with scalar variables', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [

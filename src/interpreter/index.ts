@@ -9,6 +9,8 @@ import {
   KqlParser,
   type DataTableExpressionContext,
   type EntityExpressionContext,
+  type ManagementCommandExpressionContext,
+  type ManagementShowBodyContext,
   type NamedExpressionContext,
   type OrderedExpressionContext,
   type PipeExpressionContext,
@@ -19,6 +21,7 @@ import {
 } from '../parser/KqlParser.js';
 import { KqlVisitor } from '../parser/KqlVisitor.js';
 import { setRowIngestionTime } from './ingestion-time.js';
+import { DEFAULT_DATABASE_NAME } from '../constants.js';
 import {
   getAlias,
   isDescending,
@@ -150,7 +153,7 @@ export class KustoInterpreter {
     const managementCtx = pipeExpression.beforePipeExpression().managementCommandExpression();
     if (managementCtx) {
       const parsed = extractManagementCommandFields(managementCtx, rawCommand);
-      const rows = await this.executeManagementCommand(parsed);
+      const rows = await this.executeManagementCommand(parsed, managementCtx);
       return this.decorateManagementResult(parsed, rows, startedAt);
     }
 
@@ -853,11 +856,27 @@ export class KustoInterpreter {
     return this.normalizeScalar(firstRow[firstColumnName]);
   }
 
-  private async executeManagementCommand(parsed: ReturnType<typeof extractManagementCommandFields>): Promise<KustoRow[]> {
+  private async executeManagementCommand(
+    parsed: ReturnType<typeof extractManagementCommandFields>,
+    managementCtx: ManagementCommandExpressionContext,
+  ): Promise<KustoRow[]> {
     const command = parsed.command;
 
-    if (parsed.commandName === 'create') {
-      if (!parsed.tableName || parsed.schemaText === null) {
+    const body = managementCtx.managementCommandBody();
+    if (!body) {
+      throw new Error(`Unsupported management command: ${command}`);
+    }
+
+    class ManagementCommandVisitor extends KqlVisitor<Promise<KustoRow[]>> {
+      protected override defaultResult(): Promise<KustoRow[]> {
+        throw new Error(`Unsupported management command: ${command}`);
+      }
+    }
+
+    const visitor = new ManagementCommandVisitor();
+
+    visitor.visitManagementTableWithSchemaBody = async () => {
+      if ((parsed.commandName !== 'create' && parsed.commandName !== 'alter') || !parsed.tableName || parsed.schemaText === null) {
         throw new Error(`Unsupported management command: ${command}`);
       }
 
@@ -871,29 +890,11 @@ export class KustoInterpreter {
         this.tables.set(tableName, []);
       }
 
-      return [{ Status: 'TableCreated', Table: tableName }];
-    }
+      return [{ Status: parsed.commandName === 'create' ? 'TableCreated' : 'TableAltered', Table: tableName }];
+    };
 
-    if (parsed.commandName === 'alter') {
-      if (!parsed.tableName || parsed.schemaText === null) {
-        throw new Error(`Unsupported management command: ${command}`);
-      }
-
-      const tableName = this.normalizeName(parsed.tableName);
-      const parsedSchema = this.parseSchemaDefinition(parsed.schemaText);
-      const columns = parsedSchema.columns;
-
-      this.schemas.set(tableName, columns);
-      this.schemaTypes.set(tableName, parsedSchema.types);
-      if (!this.tables.has(tableName)) {
-        this.tables.set(tableName, []);
-      }
-
-      return [{ Status: 'TableAltered', Table: tableName }];
-    }
-
-    if (parsed.commandName === 'create-or-alter') {
-      if (!parsed.tableName) {
+    visitor.visitManagementTableTargetBody = async () => {
+      if (parsed.commandName !== 'create-or-alter' || !parsed.tableName) {
         throw new Error(`Unsupported management command: ${command}`);
       }
 
@@ -903,27 +904,35 @@ export class KustoInterpreter {
       }
 
       const tableName = this.normalizeName(parsed.tableName);
-
       if (!this.tables.has(tableName)) {
         this.tables.set(tableName, []);
       }
 
       return [{ Status: 'MappingCreatedOrAltered', Table: tableName }];
-    }
+    };
 
-    if (parsed.commandName === 'show') {
-      const [showTarget] = parsed.argumentTokens;
-      if (showTarget !== 'tables') {
+    visitor.visitManagementShowBody = (ctx: ManagementShowBodyContext) => {
+      if (parsed.commandName !== 'show') {
         throw new Error(`Unsupported management command: ${command}`);
       }
 
-      return Array.from(this.tables.keys())
-        .sort((left, right) => left.localeCompare(right))
-        .map((tableName) => ({ TableName: tableName }));
-    }
+      const target = ctx.getText().toLowerCase();
+      if (target === 'tables') {
+        const databaseName = this.defaultDatabaseName ?? DEFAULT_DATABASE_NAME;
+        return Promise.resolve(Array.from(this.tables.keys())
+          .sort((left, right) => left.localeCompare(right))
+          .map((tableName) => ({ TableName: tableName, DatabaseName: databaseName })));
+      }
 
-    if (parsed.commandName === 'drop') {
-      if (!parsed.tableName) {
+      if (target === 'database') {
+        return Promise.resolve([{ DatabaseName: this.defaultDatabaseName ?? DEFAULT_DATABASE_NAME }]);
+      }
+
+      throw new Error(`Unsupported management command: ${command}`);
+    };
+
+    visitor.visitManagementDropTableBody = async () => {
+      if (parsed.commandName !== 'drop' || !parsed.tableName) {
         throw new Error(`Unsupported management command: ${command}`);
       }
 
@@ -942,15 +951,15 @@ export class KustoInterpreter {
       }
 
       return [{ Status: existed ? 'TableDropped' : 'TableNotFound', Table: tableName }];
-    }
+    };
 
-    if (parsed.commandName === 'ingest') {
-      if (!parsed.tableName || parsed.fromQueryPayload === null) {
+    const ingestWithKind = async (expectedKind: 'inline' | 'uri'): Promise<KustoRow[]> => {
+      if (parsed.commandName !== 'ingest' || !parsed.tableName || parsed.fromQueryPayload === null) {
         throw new Error(`Unsupported management command: ${command}`);
       }
 
       const ingestKind = parsed.argumentTokens[0];
-      if (ingestKind !== 'inline' && ingestKind !== 'uri') {
+      if (ingestKind !== expectedKind) {
         throw new Error(`Unsupported management command: ${command}`);
       }
 
@@ -968,9 +977,28 @@ export class KustoInterpreter {
       }
 
       return [{ Status: 'Ingested', Table: tableName, Count: ingested.length }];
+    };
+
+    visitor.visitManagementIngestInlineBody = async () => ingestWithKind('inline');
+    visitor.visitManagementIngestFromUriBody = async () => ingestWithKind('uri');
+
+    const concreteBody = body.managementTableWithSchemaBody()
+      ?? body.managementTableTargetBody()
+      ?? body.managementDropTableBody()
+      ?? body.managementShowBody()
+      ?? body.managementIngestInlineBody()
+      ?? body.managementIngestFromUriBody()
+      ?? body.managementGenericBody();
+    if (!concreteBody) {
+      throw new Error(`Unsupported management command: ${command}`);
     }
 
-    throw new Error(`Unsupported management command: ${command}`);
+    const rows = await visitor.visit(concreteBody);
+    if (!rows) {
+      throw new Error(`Unsupported management command: ${command}`);
+    }
+
+    return rows;
   }
 
   private parseIngestOptions(argumentsText: string): { ignoreFirstRecord: boolean } {

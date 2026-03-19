@@ -35,7 +35,8 @@ managementDropTableBody
   ;
 
 managementShowBody
-  : Target=managementCommandIdentifier
+  : managementCommandIdentifier
+  | DATABASE
   ;
 
 managementIngestInlineBody

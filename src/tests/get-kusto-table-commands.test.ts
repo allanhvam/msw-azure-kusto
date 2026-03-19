@@ -22,6 +22,6 @@ test('getKustoTableCommands output can be executed and validated with .show tabl
 
   assert.equal(showTables.kind, 'management');
   assert.deepEqual(showTables.rows, [
-    { TableName: 'StormEvents' },
+    { TableName: 'StormEvents', DatabaseName: 'default' },
   ]);
 });

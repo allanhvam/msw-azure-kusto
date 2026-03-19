@@ -97,7 +97,7 @@ class ManagementCommandBodyExtractor extends KqlVisitor<ManagementBodyFields> {
 
   visitManagementShowBody = (ctx: ManagementShowBodyContext): ManagementBodyFields => ({
     ...defaultBodyFields,
-    argumentTokens: [ctx.managementCommandIdentifier().getText().toLowerCase()],
+    argumentTokens: [ctx.getText().toLowerCase()],
     argumentsText: getTextFromTokenRange(this.rawCommand, ctx),
   });
 

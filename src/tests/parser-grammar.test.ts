@@ -44,6 +44,30 @@ test('parses management command with table token', () => {
   assert.equal(parser.numberOfSyntaxErrors, 0);
 });
 
+test('parses show database management command', () => {
+  const query = '.show database';
+
+  const lexer = new KqlLexer(antlr.CharStream.fromString(query));
+  const tokens = new antlr.CommonTokenStream(lexer);
+  const parser = new KqlParser(tokens);
+  const top = parser.top();
+
+  assert.ok(top.query());
+  assert.equal(parser.numberOfSyntaxErrors, 0);
+});
+
+test('parses show tables management command', () => {
+  const query = '.show tables';
+
+  const lexer = new KqlLexer(antlr.CharStream.fromString(query));
+  const tokens = new antlr.CommonTokenStream(lexer);
+  const parser = new KqlParser(tokens);
+  const top = parser.top();
+
+  assert.ok(top.query());
+  assert.equal(parser.numberOfSyntaxErrors, 0);
+});
+
 test('parses create table command with scalar column types', () => {
   const query = '.create table Events (Id:int, Value:real)';
 
