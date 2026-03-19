@@ -1,6 +1,6 @@
 {
   "name": "msw-azure-kusto",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "TypeScript Azure Data Explorer (Kusto) HTTP emulator for local testing with MSW.",
   "keywords": [
     "kusto",

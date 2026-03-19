@@ -79,7 +79,7 @@ function printHelp(): void {
     '  npx msw-azure-kusto --port <port> [--dashboard <port>]',
     '',
     'Options:',
-    '  --port, -p       Kusto emulator HTTP port (default: 3000)',
+    '  --port, -p       Kusto emulator HTTP port',
     '  --dashboard      Optional dashboard HTTP port',
     '  --help, -h       Show this help',
   ].join('\n'));
