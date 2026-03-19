@@ -135,8 +135,8 @@ test('kusto handler returns dynamic values as objects', async () => {
     const primaryDataTable = json.find((frame) => frame.FrameType === 'DataTable' && frame.TableKind === 'PrimaryResult');
     assert.ok(primaryDataTable);
     assert.deepEqual(primaryDataTable.Columns, [
-      { ColumnName: 'Id', DataType: 'int', ColumnType: 'int' },
-      { ColumnName: 'Payload', DataType: 'dynamic', ColumnType: 'dynamic' },
+      { ColumnName: 'Id', ColumnType: 'int' },
+      { ColumnName: 'Payload', ColumnType: 'dynamic' },
     ]);
     assert.deepEqual(primaryDataTable.Rows, [[1, { foo: 'bar' }]]);
   } finally {
@@ -202,6 +202,38 @@ test('kusto handler isolates data per database', async () => {
     assert.ok(primaryDbB);
     assert.deepEqual(primaryDbA.Rows, [[1, 100]]);
     assert.deepEqual(primaryDbB.Rows, [[2, 200]]);
+  } finally {
+    server.close();
+  }
+});
+
+test('kusto handler serializes integer real values with decimal digit', async () => {
+  const server = setupServer(...handlers());
+  server.listen();
+
+  try {
+    await fetch('https://kusto.local/v1/rest/mgmt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csl: '.create table RealValues (Value:real)' }),
+    });
+
+    await fetch('https://kusto.local/v1/rest/mgmt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csl: '.ingest inline into table RealValues <| 1' }),
+    });
+
+    const response = await fetch('https://kusto.local/v2/rest/query', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csl: 'RealValues | project Value' }),
+    });
+
+    assert.equal(response.status, 200);
+
+    const body = await response.text();
+    assert.match(body, /"Rows":\[\[1\.0\]\]/);
   } finally {
     server.close();
   }

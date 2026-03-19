@@ -27,6 +27,10 @@ function serializeForSnapshot(value: unknown): unknown {
   }
 
   if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return null;
+    }
+
     return value.toISOString();
   }
 

@@ -295,6 +295,25 @@ test('drop table without ifexists fails when table is missing', async () => {
   );
 });
 
+test('shows database name with show database', async () => {
+  const interpreter = new KustoInterpreter({ databaseName: 'TestDb' });
+
+  const result = await interpreter.execute('.show database');
+
+  assert.equal(result.kind, 'management');
+  assert.deepEqual(result.rows, [{ DatabaseName: 'TestDb' }]);
+});
+
+test('shows tables with database name', async () => {
+  const interpreter = new KustoInterpreter({ databaseName: 'TestDb' });
+  await interpreter.execute('.create table Events (Id:int)');
+
+  const result = await interpreter.execute('.show tables');
+
+  assert.equal(result.kind, 'management');
+  assert.deepEqual(result.rows, [{ TableName: 'Events', DatabaseName: 'TestDb' }]);
+});
+
 test('supports let statement with scalar variables', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
@@ -503,6 +522,27 @@ test('interprets datatable query source', async () => {
     { EventType: 'Wildfire', State: 'California', DamageProperty: 2500000 },
     { EventType: 'Flood', State: 'California', DamageProperty: 1500000 },
   ]);
+  assert.deepEqual(result.columnTypes, {
+    EventType: 'string',
+    State: 'string',
+    DamageProperty: 'long',
+  });
+});
+
+test('prefers created table schema types for query column types', async () => {
+  const interpreter = new KustoInterpreter();
+
+  await interpreter.execute('.create table Metrics (Id:long, Name:string)');
+  await interpreter.execute('.ingest inline into table Metrics <| 1,alpha');
+
+  const result = await interpreter.execute('Metrics | project Id, Name');
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Id: 1, Name: 'alpha' }]);
+  assert.deepEqual(result.columnTypes, {
+    Id: 'long',
+    Name: 'string',
+  });
 });
 
 test('interprets count operator', async () => {

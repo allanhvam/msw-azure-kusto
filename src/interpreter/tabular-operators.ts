@@ -1,9 +1,8 @@
-import type { EntityExpressionContext } from '../parser/KqlParser.js';
-import type { KustoRow, QueryOperatorAst, TabularSourceAst } from './types.js';
+import type { AfterPipeOperatorContext, EntityExpressionContext } from '../parser/KqlParser.js';
+import type { KustoRow } from './types.js';
 
 export type TabularOperatorsOptions = {
-  resolveTabularSourceRows: (source: TabularSourceAst) => KustoRow[];
-  executePartitionSubquery: (groupRows: KustoRow[], subExpressionOperators: QueryOperatorAst[]) => KustoRow[];
+  executePartitionSubquery: (groupRows: KustoRow[], subExpressionOperators: AfterPipeOperatorContext[]) => KustoRow[];
 };
 
 export class TabularOperators {
@@ -13,22 +12,18 @@ export class TabularOperators {
     this.options = options;
   }
 
-  public applyUnion(rows: KustoRow[], sources: TabularSourceAst[]): KustoRow[] {
-    const unionRows = rows.map((row) => ({ ...row }));
-    for (const source of sources) {
-      unionRows.push(...this.options.resolveTabularSourceRows(source));
-    }
-
-    return unionRows;
+  public applyUnion(rows: KustoRow[], unionRows: KustoRow[]): KustoRow[] {
+    const result = rows.map((row) => ({ ...row }));
+    result.push(...unionRows);
+    return result;
   }
 
   public applyJoin(
     leftRows: KustoRow[],
     joinKind: 'inner' | 'leftouter',
-    rightSource: TabularSourceAst,
+    rightRows: KustoRow[],
     onExpressions: string[],
   ): KustoRow[] {
-    const rightRows = this.options.resolveTabularSourceRows(rightSource);
     const onColumns = this.getJoinColumns(onExpressions);
     const output: KustoRow[] = [];
 
@@ -64,10 +59,9 @@ export class TabularOperators {
   public applyLookup(
     leftRows: KustoRow[],
     lookupKind: 'inner' | 'leftouter',
-    rightSource: TabularSourceAst,
+    rightRows: KustoRow[],
     onExpressions: string[],
   ): KustoRow[] {
-    const rightRows = this.options.resolveTabularSourceRows(rightSource);
     const onColumns = this.getJoinColumns(onExpressions);
     const rightJoinColumns = new Set(onColumns.map((column) => column.right));
     const output: KustoRow[] = [];
@@ -92,7 +86,7 @@ export class TabularOperators {
   public applyPartition(
     rows: KustoRow[],
     byExpression: EntityExpressionContext,
-    subExpressionOperators: QueryOperatorAst[],
+    subExpressionOperators: AfterPipeOperatorContext[],
   ): KustoRow[] {
     const groups = new Map<string, KustoRow[]>();
 

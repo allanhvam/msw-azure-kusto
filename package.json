@@ -1,6 +1,6 @@
 {
   "name": "msw-azure-kusto",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "TypeScript Azure Data Explorer (Kusto) HTTP emulator for local testing with MSW.",
   "keywords": [
     "kusto",
@@ -20,6 +20,9 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "msw-azure-kusto": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -36,6 +39,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "demo:cli": "node dist/cli.js --port 80 --dashboard 4000",
+    "demo:cli:help": "node dist/cli.js --help",
     "download:grammar": "npm run build && node dist/tools/download-grammar-files.js",
     "generate:parser": "antlr-ng -o src/parser --lib src/grammar -Dlanguage=TypeScript --generate-visitor=true src/grammar/Kql.g4",
     "lint": "eslint .",
@@ -58,7 +63,9 @@
   },
   "dependencies": {
     "antlr4ng": "^3.0.16",
+    "hono": "^4.12.8",
     "msw": "^2.12.10",
+    "portmore": "^1.0.0",
     "zod": "^4.3.6"
   }
 }
