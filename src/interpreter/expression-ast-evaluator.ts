@@ -844,6 +844,10 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
         return '';
       }
 
+      if (Array.isArray(val) || (typeof val === 'object' && !(val instanceof Date))) {
+        return JSON.stringify(val);
+      }
+
       return String(val);
     }
 

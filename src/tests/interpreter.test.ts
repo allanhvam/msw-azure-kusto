@@ -1493,6 +1493,19 @@ test('interprets tostring, isempty, isnotempty, isnull, isnotnull, coalesce func
   ]);
 });
 
+test('tostring renders dynamic objects and arrays as JSON', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const objectResult = await interpreter.execute("print Result = tostring(dynamic({\"a\":1,\"b\":\"x\"}))");
+  assert.deepEqual(objectResult.rows, [{ Result: '{"a":1,"b":"x"}' }]);
+
+  const arrayResult = await interpreter.execute('print Result = tostring(dynamic([1,2,3]))');
+  assert.deepEqual(arrayResult.rows, [{ Result: '[1,2,3]' }]);
+
+  const nestedResult = await interpreter.execute('print Result = tostring(dynamic([{"k":1},{"k":2}]))');
+  assert.deepEqual(nestedResult.rows, [{ Result: '[{"k":1},{"k":2}]' }]);
+});
+
 test('honors queryParameters on a single-statement query', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
