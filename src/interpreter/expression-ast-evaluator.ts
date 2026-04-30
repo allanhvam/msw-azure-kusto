@@ -152,6 +152,14 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
     }
 
     const rightValue = this.visit(additiveExpressions[1])!;
+
+    if (
+      typeof leftValue === 'string' && typeof rightValue === 'string'
+      && !this.looksLikeDatetime(leftValue) && !this.looksLikeDatetime(rightValue)
+    ) {
+      throw new Error('Cannot compare values of types string and string. Try adding explicit casts.');
+    }
+
     const comparison = this.compareScalars(leftValue, rightValue);
     if (ctx.LESSTHAN()) {
       return comparison < 0;
@@ -1322,29 +1330,66 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
   }
 
   private compareScalars(left: KustoScalar, right: KustoScalar): number {
-    const leftNumber = Number(left);
-    const rightNumber = Number(right);
-    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
-      if (leftNumber === rightNumber) {
-        return 0;
+    if (typeof left === 'number' && typeof right === 'number') {
+      if (Number.isFinite(left) && Number.isFinite(right)) {
+        if (left === right) {
+          return 0;
+        }
+
+        return left < right ? -1 : 1;
       }
 
-      return leftNumber < rightNumber ? -1 : 1;
+      return this.options.compareValues(left, right);
     }
 
-    const leftDate = this.toDate(left);
-    const rightDate = this.toDate(right);
-    if (leftDate && rightDate) {
-      const leftTime = leftDate.getTime();
-      const rightTime = rightDate.getTime();
-      if (leftTime === rightTime) {
+    if (this.looksLikeDatetime(left) || this.looksLikeDatetime(right)) {
+      const leftDate = this.toDate(left);
+      const rightDate = this.toDate(right);
+      if (leftDate && rightDate) {
+        const leftTime = leftDate.getTime();
+        const rightTime = rightDate.getTime();
+        if (leftTime === rightTime) {
+          return 0;
+        }
+
+        return leftTime < rightTime ? -1 : 1;
+      }
+    }
+
+    if (typeof left === 'string' && typeof right === 'string') {
+      if (left === right) {
         return 0;
       }
 
-      return leftTime < rightTime ? -1 : 1;
+      return left < right ? -1 : 1;
+    }
+
+    if (typeof left === 'boolean' && typeof right === 'boolean') {
+      if (left === right) {
+        return 0;
+      }
+
+      return left ? 1 : -1;
     }
 
     return this.options.compareValues(left, right);
+  }
+
+  private looksLikeDatetime(value: KustoScalar): boolean {
+    if (value instanceof Date) {
+      return true;
+    }
+
+    if (typeof value !== 'string') {
+      return false;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed.toLowerCase().startsWith('datetime(')) {
+      return true;
+    }
+
+    return /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(trimmed);
   }
 
   private toDate(value: KustoScalar): Date | null {

@@ -1507,3 +1507,45 @@ test('honors queryParameters on a single-statement print expression', async () =
   assert.equal(result.kind, 'query');
   assert.deepEqual(result.rows, [{ Greeting: 'hello, world' }]);
 });
+
+test('string equality does not numeric-coerce', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const leadingZero = await interpreter.execute("print Result = '01' == '1'");
+  assert.deepEqual(leadingZero.rows, [{ Result: false }]);
+
+  const decimal = await interpreter.execute("print Result = '1.0' == '1'");
+  assert.deepEqual(decimal.rows, [{ Result: false }]);
+
+  const emptyVsZero = await interpreter.execute("print Result = '' == 0");
+  assert.deepEqual(emptyVsZero.rows, [{ Result: false }]);
+
+  const exactMatch = await interpreter.execute("print Result = 'WA' == 'WA'");
+  assert.deepEqual(exactMatch.rows, [{ Result: true }]);
+
+  const numericMatch = await interpreter.execute('print Result = 1 == 1');
+  assert.deepEqual(numericMatch.rows, [{ Result: true }]);
+});
+
+test('rejects ordered comparison between two strings', async () => {
+  const interpreter = new KustoInterpreter();
+
+  await assert.rejects(
+    () => interpreter.execute("print Result = '01' < '1'"),
+    /Cannot compare values of types string and string/,
+  );
+});
+
+test('allows ordered comparison between datetime literals', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute('print Result = datetime(2024-01-01) < datetime(2024-01-02)');
+  assert.deepEqual(result.rows, [{ Result: true }]);
+});
+
+test('allows ordered comparison after explicit toint cast', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute("print Result = toint('01') < toint('1')");
+  assert.deepEqual(result.rows, [{ Result: false }]);
+});
