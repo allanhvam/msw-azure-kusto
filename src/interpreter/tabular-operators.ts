@@ -1,8 +1,12 @@
 import type { AfterPipeOperatorContext, EntityExpressionContext } from '../parser/KqlParser.js';
-import type { KustoRow } from './types.js';
+import type { KustoRow, ExecutionContext } from './types.js';
 
 export type TabularOperatorsOptions = {
-  executePartitionSubquery: (groupRows: KustoRow[], subExpressionOperators: AfterPipeOperatorContext[]) => KustoRow[];
+  executePartitionSubquery: (
+    groupRows: KustoRow[],
+    subExpressionOperators: AfterPipeOperatorContext[],
+    executionContext: ExecutionContext,
+  ) => KustoRow[];
 };
 
 export class TabularOperators {
@@ -87,6 +91,7 @@ export class TabularOperators {
     rows: KustoRow[],
     byExpression: EntityExpressionContext,
     subExpressionOperators: AfterPipeOperatorContext[],
+    executionContext: ExecutionContext,
   ): KustoRow[] {
     const groups = new Map<string, KustoRow[]>();
 
@@ -101,7 +106,7 @@ export class TabularOperators {
 
     const output: KustoRow[] = [];
     for (const groupRows of groups.values()) {
-      output.push(...this.options.executePartitionSubquery(groupRows, subExpressionOperators));
+      output.push(...this.options.executePartitionSubquery(groupRows, subExpressionOperators, executionContext));
     }
 
     return output;
