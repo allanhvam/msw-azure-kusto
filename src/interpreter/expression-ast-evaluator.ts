@@ -921,6 +921,16 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
         return null;
       }
 
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (!/^-?\d+$/.test(trimmed)) {
+          return null;
+        }
+
+        const num = Number(trimmed);
+        return Number.isFinite(num) ? num : null;
+      }
+
       const num = Number(val);
       return Number.isFinite(num) ? Math.trunc(num) : null;
     }
