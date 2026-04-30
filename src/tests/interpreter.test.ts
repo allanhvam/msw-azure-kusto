@@ -1608,3 +1608,22 @@ test('allows ordered comparison after explicit toint cast', async () => {
   const result = await interpreter.execute("print Result = toint('01') < toint('1')");
   assert.deepEqual(result.rows, [{ Result: false }]);
 });
+
+test('tolong/toint return null for non-integer strings', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(
+    "print L1 = tolong('3.7'), L2 = tolong('1e2'), L3 = tolong('abc'), L4 = tolong(''), I1 = toint('-5'), I2 = toint('1.0'), I3 = toint(' 42 '), N1 = tolong(3.7), N2 = toint(-3.9)",
+  );
+  assert.deepEqual(result.rows, [{
+    L1: null,
+    L2: null,
+    L3: null,
+    L4: null,
+    I1: -5,
+    I2: null,
+    I3: 42,
+    N1: 3,
+    N2: -3,
+  }]);
+});
