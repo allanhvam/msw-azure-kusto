@@ -1040,7 +1040,9 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
     const date = this.toDate(value);
     const stepMilliseconds = this.toTimespanMilliseconds(roundTo);
     if (date && stepMilliseconds !== null && stepMilliseconds > 0) {
-      // Kusto datetime binning aligns with a fixed calendar anchor, not unix epoch.
+      // Kusto datetime binning anchors on .NET's DateTime.MinValue (0001-01-01),
+      // not unix epoch — this matters for periods that aren't divisors of 1 day,
+      // e.g. `bin(datetime, 7d)` lands on Mondays, not Thursdays.
       const anchor = this.getDatetimeBinAnchorMilliseconds();
       const delta = date.getTime() - anchor;
       const binned = Math.floor(delta / stepMilliseconds) * stepMilliseconds + anchor;

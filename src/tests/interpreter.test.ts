@@ -877,6 +877,18 @@ test('interprets summarize by bin function', async () => {
   ]);
 });
 
+test('bin(datetime, 7d) anchors at year 0001 (Monday-aligned, matches real ADX)', async () => {
+  const interpreter = new KustoInterpreter();
+  await seedTable(interpreter, 'Events', [
+    { Id: 1, Ts: '2007-01-03T10:30:00.000Z' },
+  ]);
+
+  const result = await interpreter.execute('Events | extend Bucket = bin(Ts, 7d) | project Bucket');
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Bucket: '2007-01-01T00:00:00.000Z' }]);
+});
+
 test('interprets datetime_add function', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
