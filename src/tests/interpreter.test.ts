@@ -1034,6 +1034,39 @@ test('interprets datetime plus timespan arithmetic', async () => {
   assert.deepEqual(result.rows, [{ End: '2024-01-08T00:00:00.000Z' }]);
 });
 
+test('interprets datetime minus datetime as a timespan', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(
+    'print Diff = datetime(2024-01-08T01:30:45Z) - datetime(2024-01-01T00:00:00Z)',
+  );
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Diff: '7.01:30:45' }]);
+});
+
+test('interprets datetime minus datetime preserving milliseconds', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(
+    'print Diff = datetime(2024-01-01T00:00:00.250Z) - datetime(2024-01-01T00:00:00.000Z)',
+  );
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Diff: '00:00:00.2500000' }]);
+});
+
+test('interprets datetime minus datetime with negative result', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(
+    'print Diff = datetime(2024-01-01T00:00:00Z) - datetime(2024-01-01T00:01:00Z)',
+  );
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Diff: '-00:01:00' }]);
+});
+
 test('interprets not function in where', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
