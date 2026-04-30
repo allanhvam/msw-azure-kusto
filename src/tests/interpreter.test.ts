@@ -1480,3 +1480,30 @@ test('interprets tostring, isempty, isnotempty, isnull, isnotnull, coalesce func
     { Id: 3, Result: 'default' },
   ]);
 });
+
+test('honors queryParameters on a single-statement query', async () => {
+  const interpreter = new KustoInterpreter();
+  await seedTable(interpreter, 'Events', [
+    { Id: 1, Value: 10 },
+    { Id: 2, Value: 20 },
+    { Id: 3, Value: 30 },
+  ]);
+
+  const result = await interpreter.execute('Events | where Value >= threshold | project Id', {
+    queryParameters: { threshold: 20 },
+  });
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Id: 2 }, { Id: 3 }]);
+});
+
+test('honors queryParameters on a single-statement print expression', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute('print Greeting = strcat("hello, ", who)', {
+    queryParameters: { who: 'world' },
+  });
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Greeting: 'hello, world' }]);
+});

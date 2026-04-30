@@ -139,10 +139,30 @@ export class KustoInterpreter {
     const statements = top.query().statement();
     if (statements.length === 1) {
       const pipeExpression = getStatementPipeExpression(statements[0]);
-      return this.executeCommand(pipeExpression, command, startedAt);
+      return this.executeWithQueryParameters(options, () => this.executeCommand(pipeExpression, command, startedAt));
     }
 
-      return this.executeScriptStatements(statements, startedAt, command, options);
+    return this.executeScriptStatements(statements, startedAt, command, options);
+  }
+
+  private async executeWithQueryParameters<T>(
+    options: KustoExecuteOptions,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    if (!options.queryParameters) {
+      return run();
+    }
+
+    const previousBindings = this.currentLetBindings;
+    const previousTableBindings = this.currentLetTableBindings;
+    this.currentLetBindings = this.normalizeQueryParameters(options.queryParameters);
+    this.currentLetTableBindings = new Map();
+    try {
+      return await run();
+    } finally {
+      this.currentLetBindings = previousBindings;
+      this.currentLetTableBindings = previousTableBindings;
+    }
   }
 
   private async executeCommand(
