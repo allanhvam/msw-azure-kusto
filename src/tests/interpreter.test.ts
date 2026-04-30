@@ -1520,6 +1520,53 @@ test('honors queryParameters on a single-statement print expression', async () =
   assert.deepEqual(result.rows, [{ Greeting: 'hello, world' }]);
 });
 
+test('concurrent execute calls do not clobber each other\'s queryParameters', async () => {
+  const interpreter = new KustoInterpreter();
+  await seedTable(interpreter, 'Events', [
+    { Id: 1, Value: 10 },
+    { Id: 2, Value: 20 },
+    { Id: 3, Value: 30 },
+    { Id: 4, Value: 40 },
+    { Id: 5, Value: 50 },
+  ]);
+
+  const thresholds = [10, 20, 30, 40, 50];
+  const results = await Promise.all(thresholds.map((threshold) =>
+    interpreter.execute('Events | where Value >= threshold | project Id', {
+      queryParameters: { threshold },
+    }),
+  ));
+
+  for (let index = 0; index < thresholds.length; index += 1) {
+    const expected = [{ Id: 1 }, { Id: 2 }, { Id: 3 }, { Id: 4 }, { Id: 5 }]
+      .filter((_, idx) => (idx + 1) * 10 >= thresholds[index]);
+    assert.deepEqual(results[index].rows, expected, `mismatch for threshold=${thresholds[index]}`);
+  }
+
+  const followUp = await interpreter.execute('Events | where Value >= 0 | count');
+  assert.deepEqual(followUp.rows, [{ Count: 5 }]);
+});
+
+test('multi-statement scripts with overlapping execution keep distinct let bindings', async () => {
+  const interpreter = new KustoInterpreter();
+  await seedTable(interpreter, 'Events', [
+    { Id: 1, Value: 10 },
+    { Id: 2, Value: 20 },
+    { Id: 3, Value: 30 },
+  ]);
+
+  const scriptA = 'let cutoff = 20; Events | where Value >= cutoff | project Id';
+  const scriptB = 'let cutoff = 10; Events | where Value >= cutoff | project Id';
+
+  const [resultA, resultB] = await Promise.all([
+    interpreter.execute(scriptA),
+    interpreter.execute(scriptB),
+  ]);
+
+  assert.deepEqual(resultA.rows, [{ Id: 2 }, { Id: 3 }]);
+  assert.deepEqual(resultB.rows, [{ Id: 1 }, { Id: 2 }, { Id: 3 }]);
+});
+
 test('string equality does not numeric-coerce', async () => {
   const interpreter = new KustoInterpreter();
 

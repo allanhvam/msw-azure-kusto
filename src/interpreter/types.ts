@@ -9,3 +9,13 @@ export type KustoExecutionResult = {
   rows: KustoRow[];
   columnTypes?: Record<string, string>;
 };
+
+export type ExecutionContext = {
+  bindings: KustoRow;
+  tableBindings: Map<string, KustoRow[]>;
+};
+
+export const EMPTY_EXECUTION_CONTEXT: ExecutionContext = Object.freeze({
+  bindings: Object.freeze({}) as KustoRow,
+  tableBindings: new Map<string, KustoRow[]>(),
+}) as ExecutionContext;

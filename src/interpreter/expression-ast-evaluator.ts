@@ -18,28 +18,41 @@ import type {
   UnnamedExpressionContext,
 } from '../parser/KqlParser.js';
 import { KqlVisitor } from '../parser/KqlVisitor.js';
-import type { KustoRow, KustoScalar } from './types.js';
+import type { KustoRow, KustoScalar, ExecutionContext } from './types.js';
+import { EMPTY_EXECUTION_CONTEXT } from './types.js';
 
 export type ExpressionAstEvaluatorOptions = {
   parseScalar: (text: string) => KustoScalar;
   normalizeScalar: (value: unknown) => KustoScalar;
   compareValues: (left: KustoScalar, right: KustoScalar) => number;
-  resolveLetScalar: (name: string) => KustoScalar | undefined;
-  evaluateToScalarExpression: (toScalarExpression: ToScalarExpressionContext) => KustoScalar;
+  evaluateToScalarExpression: (toScalarExpression: ToScalarExpressionContext, executionContext: ExecutionContext) => KustoScalar;
 };
 
 export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
   private readonly options: ExpressionAstEvaluatorOptions;
   private currentRow: KustoRow = {};
+  private currentExecutionContext: ExecutionContext = EMPTY_EXECUTION_CONTEXT;
 
   public constructor(options: ExpressionAstEvaluatorOptions) {
     super();
     this.options = options;
   }
 
-  public evaluateUnnamedExpression(unnamedExpression: UnnamedExpressionContext, row: KustoRow): KustoScalar {
+  public evaluateUnnamedExpression(
+    unnamedExpression: UnnamedExpressionContext,
+    row: KustoRow,
+    executionContext: ExecutionContext,
+  ): KustoScalar {
+    const previousRow = this.currentRow;
+    const previousExecutionContext = this.currentExecutionContext;
     this.currentRow = row;
-    return this.visit(unnamedExpression.logicalOrExpression())!;
+    this.currentExecutionContext = executionContext;
+    try {
+      return this.visit(unnamedExpression.logicalOrExpression())!;
+    } finally {
+      this.currentRow = previousRow;
+      this.currentExecutionContext = previousExecutionContext;
+    }
   }
 
   public createRangeRows(
@@ -47,10 +60,11 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
     fromExpression: UnnamedExpressionContext,
     toExpression: UnnamedExpressionContext,
     stepExpression: UnnamedExpressionContext,
+    executionContext: ExecutionContext,
   ): KustoRow[] {
-    const from = this.evaluateUnnamedExpression(fromExpression, {});
-    const to = this.evaluateUnnamedExpression(toExpression, {});
-    const step = this.evaluateUnnamedExpression(stepExpression, {});
+    const from = this.evaluateUnnamedExpression(fromExpression, {}, executionContext);
+    const to = this.evaluateUnnamedExpression(toExpression, {}, executionContext);
+    const step = this.evaluateUnnamedExpression(stepExpression, {}, executionContext);
 
     const fromNumber = Number(from);
     const toNumber = Number(to);
@@ -399,7 +413,7 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
 
       const elementOperation = operation.functionCallOrPathElementOperation();
       if (elementOperation) {
-        const index = this.evaluateUnnamedExpression(elementOperation.unnamedExpression()!, this.currentRow);
+        const index = this.evaluateUnnamedExpression(elementOperation.unnamedExpression()!, this.currentRow, this.currentExecutionContext);
         if (Array.isArray(current)) {
           current = current[Number(index)];
           continue;
@@ -422,7 +436,7 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
   };
 
   visitToScalarExpression = (ctx: ToScalarExpressionContext): KustoScalar => {
-    return this.options.evaluateToScalarExpression(ctx);
+    return this.options.evaluateToScalarExpression(ctx, this.currentExecutionContext);
   };
 
   visitToTableExpression = (): KustoScalar => {
@@ -442,9 +456,8 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
         return this.currentRow[name];
       }
 
-      const letBinding = this.options.resolveLetScalar(name);
-      if (letBinding !== undefined) {
-        return letBinding;
+      if (Object.hasOwn(this.currentExecutionContext.bindings, name)) {
+        return this.currentExecutionContext.bindings[name];
       }
 
       return null;
@@ -462,7 +475,7 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
         throw new Error('Unsupported parenthesized expression.');
       }
 
-      return this.evaluateUnnamedExpression(inner, this.currentRow);
+      return this.evaluateUnnamedExpression(inner, this.currentRow, this.currentExecutionContext);
     }
 
     throw new Error(`Unsupported primary expression: ${ctx.getText()}`);
