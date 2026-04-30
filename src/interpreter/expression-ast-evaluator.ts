@@ -1349,6 +1349,10 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
       return new Date(result).toISOString();
     }
 
+    if (!isPlus && leftDate && rightDate) {
+      return this.formatTimespanMilliseconds(leftDate.getTime() - rightDate.getTime());
+    }
+
     const leftNumber = Number(left);
     const rightNumber = Number(right);
     if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
@@ -1356,6 +1360,25 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
     }
 
     return null;
+  }
+
+  private formatTimespanMilliseconds(totalMilliseconds: number): string {
+    const negative = totalMilliseconds < 0;
+    const absoluteMs = Math.abs(totalMilliseconds);
+    const days = Math.floor(absoluteMs / 86_400_000);
+    const hours = Math.floor((absoluteMs % 86_400_000) / 3_600_000);
+    const minutes = Math.floor((absoluteMs % 3_600_000) / 60_000);
+    const seconds = Math.floor((absoluteMs % 60_000) / 1_000);
+    const fractionalMs = absoluteMs % 1_000;
+
+    const pad2 = (value: number): string => value.toString().padStart(2, '0');
+    const sign = negative ? '-' : '';
+    const dayPart = days > 0 ? `${days}.` : '';
+    const fractionPart = fractionalMs > 0
+      ? `.${fractionalMs.toString().padStart(3, '0')}0000`
+      : '';
+
+    return `${sign}${dayPart}${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}${fractionPart}`;
   }
 
   private compareScalars(left: KustoScalar, right: KustoScalar): number {
