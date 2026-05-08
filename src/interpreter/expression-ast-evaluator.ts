@@ -99,9 +99,19 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
       return this.visit(ctx.logicalAndExpression())!;
     }
 
-    let value = Boolean(this.visit(ctx.logicalAndExpression()));
+    let value = this.toBoolOrNull(this.visit(ctx.logicalAndExpression()));
     for (const operation of operations) {
-      value = value || Boolean(this.visit(operation.logicalAndExpression()));
+      if (value === true) {
+        break;
+      }
+      const right = this.toBoolOrNull(this.visit(operation.logicalAndExpression()));
+      if (right === true) {
+        value = true;
+      } else if (value === null || right === null) {
+        value = null;
+      } else {
+        value = false;
+      }
     }
 
     return value;
@@ -113,13 +123,30 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
       return this.visit(ctx.equalityExpression())!;
     }
 
-    let value = Boolean(this.visit(ctx.equalityExpression()));
+    let value = this.toBoolOrNull(this.visit(ctx.equalityExpression()));
     for (const operation of operations) {
-      value = value && Boolean(this.visit(operation.equalityExpression()));
+      if (value === false) {
+        break;
+      }
+      const right = this.toBoolOrNull(this.visit(operation.equalityExpression()));
+      if (right === false) {
+        value = false;
+      } else if (value === null || right === null) {
+        value = null;
+      } else {
+        value = true;
+      }
     }
 
     return value;
   };
+
+  private toBoolOrNull(value: KustoScalar | undefined): boolean | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    return Boolean(value);
+  }
 
   visitEqualsEqualityExpression = (ctx: EqualsEqualityExpressionContext): KustoScalar => {
     const leftValue = this.visit(ctx.relationalExpression(0)!)!;
@@ -529,7 +556,11 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
         throw new Error('not() expects exactly one argument.');
       }
 
-      return !argumentsValues[0];
+      const arg = argumentsValues[0];
+      if (arg === null || arg === undefined) {
+        return null;
+      }
+      return !arg;
     }
 
     if (functionName === 'todatetime') {

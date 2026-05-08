@@ -1091,6 +1091,23 @@ test('interprets not function in extend', async () => {
   assert.deepEqual(result.rows, [{ IsPublished: true }]);
 });
 
+test('not/and/or propagate null per Kleene logic', async () => {
+  const interpreter = new KustoInterpreter();
+  await interpreter.execute('.create table Flags (Id:int, A:bool, B:bool)');
+  await interpreter.execute('.ingest inline into table Flags <| [1, true, null]\n[2, false, null]\n[3, null, null]');
+
+  const result = await interpreter.execute(
+    'Flags | extend NotB = not(B), AndAB = A and B, OrAB = A or B | project Id, NotB, AndAB, OrAB | sort by Id asc',
+  );
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [
+    { Id: 1, NotB: null, AndAB: null, OrAB: true },
+    { Id: 2, NotB: null, AndAB: false, OrAB: null },
+    { Id: 3, NotB: null, AndAB: null, OrAB: null },
+  ]);
+});
+
 test('interprets union operator', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'LeftEvents', [
