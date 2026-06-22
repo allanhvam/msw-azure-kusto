@@ -274,6 +274,23 @@ test('supports ingestion_time()', async () => {
   assert.equal(result.rows[0].IngestionTime, result.rows[1].IngestionTime);
 });
 
+test('supports summarize arg_max(ingestion_time(), *)', async () => {
+  const interpreter = new KustoInterpreter();
+
+  await interpreter.execute('.create table EventsArgMax (Id:int, Label:string)');
+  await interpreter.execute('.ingest inline into table EventsArgMax <| 1,first');
+  await interpreter.execute('.ingest inline into table EventsArgMax <| 2,second');
+
+  const countResult = await interpreter.execute('EventsArgMax | count');
+  assert.equal(countResult.kind, 'query');
+  assert.deepEqual(countResult.rows, [{ Count: 2 }]);
+
+  const result = await interpreter.execute('EventsArgMax | summarize arg_max(ingestion_time(), *) | project Id, Label');
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [{ Id: 2, Label: 'second' }]);
+});
+
 test('drops table with ifexists when table is missing', async () => {
   const interpreter = new KustoInterpreter();
 

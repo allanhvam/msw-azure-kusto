@@ -2,7 +2,7 @@ import type {
   NamedExpressionContext,
   UnnamedExpressionContext,
 } from '../parser/KqlParser.js';
-import { tryExtractFunctionCall } from './expression-ast-evaluator.js';
+import { tryExtractFunctionCall, tryExtractFunctionCallWithStarArguments } from './expression-ast-evaluator.js';
 import { getAlias } from './query-ast-parser.js';
 import type { KustoRow, KustoScalar, ExecutionContext } from './types.js';
 
@@ -74,11 +74,60 @@ export class SummarizeOperator {
   ): KustoRow {
     const result: KustoRow = {};
     for (const aggregation of aggregations) {
-      const name = getAlias(aggregation) ?? this.inferAggregationColumnName(aggregation.unnamedExpression());
+      const alias = getAlias(aggregation);
+      const rowExpansion = this.tryEvaluateRowExpansionAggregation(aggregation.unnamedExpression(), rows, executionContext);
+      if (rowExpansion) {
+        if (alias) {
+          result[alias] = rowExpansion;
+        } else {
+          Object.assign(result, rowExpansion);
+        }
+
+        continue;
+      }
+
+      const name = alias ?? this.inferAggregationColumnName(aggregation.unnamedExpression());
       result[name] = this.evaluateAggregation(aggregation.unnamedExpression(), rows, executionContext);
     }
 
     return result;
+  }
+
+  private tryEvaluateRowExpansionAggregation(
+    expression: UnnamedExpressionContext,
+    rows: KustoRow[],
+    executionContext: ExecutionContext,
+  ): KustoRow | null {
+    const functionCall = tryExtractFunctionCallWithStarArguments(expression);
+    if (!functionCall || functionCall.name.toLowerCase() !== 'arg_max') {
+      return null;
+    }
+
+    if (functionCall.arguments.length !== 2 || functionCall.arguments[0] === '*' || functionCall.arguments[1] !== '*') {
+      throw new Error(`Unsupported summarize aggregation: ${expression.getText()}`);
+    }
+
+    const maximizeByExpression = functionCall.arguments[0];
+    let selectedRow: KustoRow | null = null;
+    let selectedValue: KustoScalar = null;
+
+    for (const row of rows) {
+      const value = this.options.normalizeScalar(this.options.evaluateUnnamedExpression(maximizeByExpression, row, executionContext));
+      if (value === null) {
+        continue;
+      }
+
+      if (selectedValue === null || this.options.compareValues(value, selectedValue) > 0) {
+        selectedValue = value;
+        selectedRow = row;
+      }
+    }
+
+    if (!selectedRow) {
+      return {};
+    }
+
+    return { ...selectedRow };
   }
 
   private inferAggregationColumnName(expression: UnnamedExpressionContext): string {

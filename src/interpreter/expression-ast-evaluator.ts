@@ -28,6 +28,8 @@ export type ExpressionAstEvaluatorOptions = {
   evaluateToScalarExpression: (toScalarExpression: ToScalarExpressionContext, executionContext: ExecutionContext) => KustoScalar;
 };
 
+export type FunctionCallArgument = UnnamedExpressionContext | '*';
+
 export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
   private readonly options: ExpressionAstEvaluatorOptions;
   private currentRow: KustoRow = {};
@@ -1601,6 +1603,27 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
 export function tryExtractFunctionCall(
   unnamedExpression: UnnamedExpressionContext,
 ): { name: string; arguments: UnnamedExpressionContext[] } | null {
+  const functionCall = tryExtractFunctionCallWithStarArguments(unnamedExpression);
+  if (!functionCall) {
+    return null;
+  }
+
+  const argumentsList = functionCall.arguments.filter(
+    (argument): argument is UnnamedExpressionContext => argument !== '*',
+  );
+  if (argumentsList.length !== functionCall.arguments.length) {
+    return null;
+  }
+
+  return {
+    name: functionCall.name,
+    arguments: argumentsList,
+  };
+}
+
+export function tryExtractFunctionCallWithStarArguments(
+  unnamedExpression: UnnamedExpressionContext,
+): { name: string; arguments: FunctionCallArgument[] } | null {
   const logicalOrExpression = unnamedExpression.logicalOrExpression();
   if (logicalOrExpression.logicalOrOperation().length > 0) {
     return null;
@@ -1689,7 +1712,7 @@ export function tryExtractFunctionCall(
 
   const argumentsList = namedFunctionCall.argumentExpression().map((argumentExpression) => {
     if (argumentExpression.starExpression()) {
-      return null;
+      return '*' as const;
     }
 
     const namedExpression = argumentExpression.namedExpression();
@@ -1702,6 +1725,6 @@ export function tryExtractFunctionCall(
 
   return {
     name: namedFunctionCall.simpleNameReference().getText(),
-    arguments: argumentsList as UnnamedExpressionContext[],
+    arguments: argumentsList as FunctionCallArgument[],
   };
 }
