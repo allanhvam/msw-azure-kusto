@@ -30,7 +30,7 @@ import {
   getStatementPipeExpression,
   type QueryAstParserOptions,
 } from './query-ast-parser.js';
-import { executePipeExpression, applyOperators, type QueryAstExecutionHandlers } from './query-ast-executor.js';
+import { executePipeExpression, applyOperators, type QueryAstExecutionHandlers, type ScanSpec } from './query-ast-executor.js';
 import { SummarizeOperator } from './summarize-operator.js';
 import { TabularOperators } from './tabular-operators.js';
 import { ExpressionAstEvaluator } from './expression-ast-evaluator.js';
@@ -114,6 +114,7 @@ export class KustoInterpreter {
         this.applyPartitionAst(rows, byExpression, subExpressionOperators, executionContext),
       applyJoin: (rows, joinKind, rightRows, on) => this.tabularOperators.applyJoin(rows, joinKind, rightRows, on),
       applyLookup: (rows, lookupKind, rightRows, on) => this.tabularOperators.applyLookup(rows, lookupKind, rightRows, on),
+      applyScan: (rows, spec) => this.applyScanAst(rows, spec, executionContext),
     };
   }
 
@@ -1578,6 +1579,169 @@ export class KustoInterpreter {
     });
 
     return sorted;
+  }
+
+  private applyScanAst(rows: KustoRow[], spec: ScanSpec, executionContext: ExecutionContext): KustoRow[] {
+    const declarations = spec.declarations.map((declaration) => {
+      const defaultClause = declaration.scalarParameterDefault();
+      return {
+        name: declaration.parameterName().getText(),
+        defaultValue: defaultClause ? this.evaluateScanDefault(defaultClause.literalExpression().getText()) : null,
+      };
+    });
+
+    const declaredDefaults: KustoRow = {};
+    for (const declaration of declarations) {
+      declaredDefaults[declaration.name] = declaration.defaultValue;
+    }
+    const declaredNames = declarations.map((declaration) => declaration.name);
+
+    const partitions = this.partitionScanRows(rows, spec.partitionBy, executionContext);
+
+    const output: KustoRow[] = [];
+    for (const partitionRows of partitions) {
+      const ordered = spec.orderBy.length > 0
+        ? this.applySortAst(partitionRows, spec.orderBy, executionContext)
+        : partitionRows;
+      output.push(...this.runScanStateMachine(ordered, spec, declaredNames, declaredDefaults, executionContext));
+    }
+
+    return output;
+  }
+
+  private evaluateScanDefault(text: string): KustoScalar {
+    const typedNull = text.match(/^[A-Za-z_]\w*\(\s*(.*?)\s*\)$/s);
+    if (typedNull) {
+      const inner = typedNull[1].trim();
+      if (inner === '' || /^null$/i.test(inner)) {
+        return null;
+      }
+
+      return this.normalizeScalar(this.parseScalar(inner));
+    }
+
+    return this.normalizeScalar(this.parseScalar(text));
+  }
+
+  private partitionScanRows(
+    rows: KustoRow[],
+    partitionBy: UnnamedExpressionContext[],
+    executionContext: ExecutionContext,
+  ): KustoRow[][] {
+    if (partitionBy.length === 0) {
+      return [rows];
+    }
+
+    const groups = new Map<string, KustoRow[]>();
+    const order: string[] = [];
+    for (const row of rows) {
+      const key = JSON.stringify(
+        partitionBy.map((expression) => this.normalizeScalar(this.evaluateUnnamedExpression(expression, row, executionContext))),
+      );
+      let group = groups.get(key);
+      if (!group) {
+        group = [];
+        groups.set(key, group);
+        order.push(key);
+      }
+      group.push(row);
+    }
+
+    return order.map((key) => groups.get(key)!);
+  }
+
+  private runScanStateMachine(
+    rows: KustoRow[],
+    spec: ScanSpec,
+    declaredNames: string[],
+    declaredDefaults: KustoRow,
+    executionContext: ExecutionContext,
+  ): KustoRow[] {
+    const stepCount = spec.steps.length;
+    const stepStates: Array<KustoRow | null> = new Array(stepCount).fill(null);
+    const pendingLast: Array<KustoRow | null> = new Array(stepCount).fill(null);
+    const output: KustoRow[] = [];
+    let matchId = 0;
+    let matchStarted = false;
+
+    for (const row of rows) {
+      const originals = { ...row };
+
+      for (let stepIndex = stepCount - 1; stepIndex >= 0; stepIndex -= 1) {
+        const step = spec.steps[stepIndex];
+        const selfActive = stepStates[stepIndex] !== null;
+        const previousActive = stepIndex === 0 || stepStates[stepIndex - 1] !== null;
+        if (!selfActive && !previousActive) {
+          continue;
+        }
+
+        const evaluationRow: KustoRow = { ...originals };
+        for (let index = 0; index < stepCount; index += 1) {
+          evaluationRow[spec.steps[index].name] = stepStates[index] ?? declaredDefaults;
+        }
+
+        const source = selfActive
+          ? stepStates[stepIndex]
+          : (stepIndex > 0 ? stepStates[stepIndex - 1] : null);
+        for (const name of declaredNames) {
+          evaluationRow[name] = source && Object.hasOwn(source, name) ? source[name] : declaredDefaults[name];
+        }
+
+        if (!this.evaluateUnnamedExpression(step.condition, evaluationRow, executionContext)) {
+          continue;
+        }
+
+        const newRow: KustoRow = { ...originals };
+        for (const name of declaredNames) {
+          newRow[name] = evaluationRow[name];
+        }
+        for (const assignment of step.assignments) {
+          const value = this.evaluateUnnamedExpression(assignment.expression, evaluationRow, executionContext);
+          const normalized = Array.isArray(value) ? value : this.normalizeScalar(value);
+          newRow[assignment.name] = normalized;
+          evaluationRow[assignment.name] = normalized;
+        }
+
+        const advanced = !selfActive && stepIndex > 0;
+        const freshStart = stepIndex === 0 && !selfActive;
+        if (freshStart) {
+          if (matchStarted) {
+            matchId += 1;
+          }
+          matchStarted = true;
+        }
+
+        if (spec.matchIdColumn) {
+          newRow[spec.matchIdColumn] = matchId;
+        }
+
+        stepStates[stepIndex] = newRow;
+        if (advanced) {
+          const previousStep = spec.steps[stepIndex - 1];
+          if (previousStep.output === 'last' && pendingLast[stepIndex - 1]) {
+            output.push(pendingLast[stepIndex - 1]!);
+            pendingLast[stepIndex - 1] = null;
+          }
+          stepStates[stepIndex - 1] = null;
+        }
+
+        if (step.output === 'all') {
+          output.push(newRow);
+        } else if (step.output === 'last') {
+          pendingLast[stepIndex] = newRow;
+        }
+
+        break;
+      }
+    }
+
+    for (let stepIndex = 0; stepIndex < stepCount; stepIndex += 1) {
+      if (spec.steps[stepIndex].output === 'last' && pendingLast[stepIndex]) {
+        output.push(pendingLast[stepIndex]!);
+      }
+    }
+
+    return output;
   }
 
   private applyTopAst(
