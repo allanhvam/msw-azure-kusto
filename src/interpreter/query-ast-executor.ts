@@ -16,6 +16,8 @@ import type {
   ProjectOperatorContext,
   ProjectRenameOperatorContext,
   RangeExpressionContext,
+  ScalarParameterContext,
+  ScanOperatorContext,
   SortOperatorContext,
   SummarizeOperatorContext,
   TakeOperatorContext,
@@ -30,6 +32,21 @@ import { getJoinKind, getLookupKind, resolveTabularSource, resolveUnionSource } 
 import type {
   KustoRow,
 } from './types.js';
+
+export type ScanStepSpec = {
+  name: string;
+  output: 'all' | 'last' | 'none';
+  condition: UnnamedExpressionContext;
+  assignments: Array<{ name: string; expression: UnnamedExpressionContext }>;
+};
+
+export type ScanSpec = {
+  matchIdColumn: string | null;
+  partitionBy: UnnamedExpressionContext[];
+  orderBy: OrderedExpressionContext[];
+  declarations: ScalarParameterContext[];
+  steps: ScanStepSpec[];
+};
 
 export type QueryAstExecutionHandlers = {
   parserOptions: QueryAstParserOptions;
@@ -86,6 +103,7 @@ export type QueryAstExecutionHandlers = {
     rightRows: KustoRow[],
     on: string[],
   ) => KustoRow[];
+  applyScan: (rows: KustoRow[], spec: ScanSpec) => KustoRow[];
 };
 
 export function executePipeExpression(
@@ -347,6 +365,48 @@ class PipeOperatorExecutor extends KqlVisitor<KustoRow[]> {
       rightRows,
       ctx.joinOperatorOnClause()?.unnamedExpression().map((item) => item.getText()) ?? [],
     );
+  };
+
+  visitScanOperator = (ctx: ScanOperatorContext): KustoRow[] => {
+    let matchIdColumn: string | null = null;
+    for (const parameter of ctx.relaxedQueryOperatorParameter()) {
+      const text = parameter.getText();
+      const equalsIndex = text.indexOf('=');
+      if (equalsIndex > 0 && text.slice(0, equalsIndex).toLowerCase() === 'with_match_id') {
+        matchIdColumn = text.slice(equalsIndex + 1);
+      }
+    }
+
+    const steps: ScanStepSpec[] = ctx.scanOperatorStep().map((step) => {
+      const outputClause = step.scanOperatorStepOutputClause();
+      let output: 'all' | 'last' | 'none' = 'all';
+      if (outputClause?.LAST()) {
+        output = 'last';
+      } else if (outputClause?.NONE()) {
+        output = 'none';
+      }
+
+      const body = step.scanOperatorBody();
+      const assignments = (body?.scanOperatorAssignment() ?? []).map((assignment) => ({
+        name: assignment.parameterName().getText(),
+        expression: assignment.unnamedExpression(),
+      }));
+
+      return {
+        name: step.parameterName().getText(),
+        output,
+        condition: step.unnamedExpression(),
+        assignments,
+      };
+    });
+
+    return this.handlers.applyScan(this.rows, {
+      matchIdColumn,
+      partitionBy: ctx.scanOperatorPartitionByClause()?.unnamedExpression() ?? [],
+      orderBy: ctx.scanOperatorOrderByClause()?.orderedExpression() ?? [],
+      declarations: ctx.scanOperatorDeclareClause()?.scalarParameter() ?? [],
+      steps,
+    });
   };
 
   visitLookupOperator = (ctx: LookupOperatorContext): KustoRow[] => {
