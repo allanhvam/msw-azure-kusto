@@ -20,12 +20,12 @@ const dashboardQuerySchema = z.object({
 });
 
 function parseCliArgs(argv: string[]): CliOptions {
-  let port = 3000;
+  let port = getDefaultPort();
   let dashboardPort: number | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-
+    
     if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -60,6 +60,15 @@ function parseCliArgs(argv: string[]): CliOptions {
     port,
     dashboardPort,
   };
+}
+
+function getDefaultPort(): number {
+  const envPort = process.env.PORT?.trim();
+  if (!envPort) {
+    return 3000;
+  }
+
+  return parsePort(envPort, 'process.env.PORT');
 }
 
 function parsePort(value: string, flagName: string): number {

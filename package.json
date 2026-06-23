@@ -1,6 +1,6 @@
 {
   "name": "msw-azure-kusto",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "TypeScript Azure Data Explorer (Kusto) HTTP emulator for local testing with MSW.",
   "keywords": [
     "kusto",
@@ -12,7 +12,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/allanhvam/msw-azure-kusto.git"
+    "url": "git+https://github.com/allanhvam/msw-azure-kusto.git"
   },
   "author": "Allan Hvam",
   "license": "ISC",
@@ -21,7 +21,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "msw-azure-kusto": "./dist/cli.js"
+    "msw-azure-kusto": "dist/cli.js"
   },
   "exports": {
     ".": {
