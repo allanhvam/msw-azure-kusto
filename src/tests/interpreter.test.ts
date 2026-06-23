@@ -1,5 +1,6 @@
 import assert from 'node:assert';
 import test from 'node:test';
+import { setTimeout } from 'node:timers/promises';
 import { KustoInterpreter } from '../interpreter/index.js';
 import { seedTable } from './seed-table.js';
 
@@ -279,6 +280,8 @@ test('supports summarize arg_max(ingestion_time(), *)', async () => {
 
   await interpreter.execute('.create table EventsArgMax (Id:int, Label:string)');
   await interpreter.execute('.ingest inline into table EventsArgMax <| 1,first');
+  // Ensure the second ingest lands in a later millisecond so ingestion_time() differs.
+  await setTimeout(5);
   await interpreter.execute('.ingest inline into table EventsArgMax <| 2,second');
 
   const countResult = await interpreter.execute('EventsArgMax | count');
