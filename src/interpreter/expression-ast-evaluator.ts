@@ -245,23 +245,35 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
     }
 
     const initialExpression = ctx.stringOperatorExpression();
-    let value = Number(this.visit(initialExpression));
+    const initialRaw = this.visit(initialExpression);
+    let valueIsTimespan = this.isTimespanValue(initialRaw);
+    let value = valueIsTimespan ? this.toTimespanMilliseconds(initialRaw)! : Number(initialRaw);
     let hasRealSemantics = this.expressionHasRealNumberSemantics(initialExpression.getText());
 
     for (const operation of operations) {
       const rightExpression = operation.stringOperatorExpression();
-      const right = Number(this.visit(rightExpression));
+      const rightRaw = this.visit(rightExpression);
+      const rightIsTimespan = this.isTimespanValue(rightRaw);
+      const right = rightIsTimespan ? this.toTimespanMilliseconds(rightRaw)! : Number(rightRaw);
       const rightHasRealSemantics = this.expressionHasRealNumberSemantics(rightExpression.getText());
 
       if (operation.ASTERISK()) {
         value *= right;
+        // timespan * number (or number * timespan) stays a timespan; timespan * timespan is not.
+        valueIsTimespan = valueIsTimespan !== rightIsTimespan && (valueIsTimespan || rightIsTimespan);
         hasRealSemantics = hasRealSemantics || rightHasRealSemantics;
       } else if (operation.SLASH()) {
-        if (!hasRealSemantics && !rightHasRealSemantics && Number.isInteger(value) && Number.isInteger(right)) {
+        if (valueIsTimespan && rightIsTimespan) {
+          // timespan / timespan yields a dimensionless real ratio.
+          value /= right;
+          valueIsTimespan = false;
+          hasRealSemantics = true;
+        } else if (!valueIsTimespan && !rightIsTimespan && !hasRealSemantics && !rightHasRealSemantics && Number.isInteger(value) && Number.isInteger(right)) {
           value = Math.trunc(value / right);
         } else {
+          // timespan / number stays a timespan; number / number becomes real.
           value /= right;
-          hasRealSemantics = true;
+          hasRealSemantics = hasRealSemantics || !valueIsTimespan;
         }
       } else {
         value %= right;
@@ -269,8 +281,12 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
       }
     }
 
-    return value;
+    return valueIsTimespan ? this.formatTimespanMilliseconds(value) : value;
   };
+
+  private isTimespanValue(value: KustoScalar): boolean {
+    return typeof value === 'string' && this.toTimespanMilliseconds(value) !== null;
+  }
 
   private expressionHasRealNumberSemantics(expressionText: string): boolean {
     const text = expressionText.toLowerCase();
@@ -588,6 +604,19 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
       }
 
       return this.evaluateRoundFunction(argumentsValues[0], argumentsValues[1]);
+    }
+
+    if (functionName === 'ceiling' || functionName === 'floor') {
+      if (argumentsValues.length !== 1) {
+        throw new Error(`${functionName}() expects exactly one argument.`);
+      }
+
+      const numericValue = Number(argumentsValues[0]);
+      if (!Number.isFinite(numericValue)) {
+        return null;
+      }
+
+      return functionName === 'ceiling' ? Math.ceil(numericValue) : Math.floor(numericValue);
     }
 
     if (functionName === 'array_length') {
@@ -1542,29 +1571,50 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
       return null;
     }
 
-    const unit = trimmed.slice(-1).toLowerCase();
-    const amount = Number(trimmed.slice(0, -1));
+    // [d.]hh:mm[:ss[.fffffff]] form, e.g. the output of formatTimespanMilliseconds.
+    const colonMatch = trimmed.match(/^(-)?(?:(\d+)\.)?(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/);
+    if (colonMatch) {
+      const sign = colonMatch[1] ? -1 : 1;
+      const days = colonMatch[2] ? Number(colonMatch[2]) : 0;
+      const hours = Number(colonMatch[3]);
+      const minutes = Number(colonMatch[4]);
+      const seconds = colonMatch[5] ? Number(colonMatch[5]) : 0;
+      const fractionSeconds = colonMatch[6] ? Number(`0.${colonMatch[6]}`) : 0;
+      const totalSeconds = ((days * 24 + hours) * 60 + minutes) * 60 + seconds + fractionSeconds;
+      return sign * totalSeconds * 1_000;
+    }
+
+    // Unit-suffixed form, e.g. 1m, 1.5h, 100ms, 5microseconds, 10ticks.
+    const unitMatch = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*(ms|microseconds?|ticks?|s|m|h|d)$/i);
+    if (!unitMatch) {
+      return null;
+    }
+
+    const amount = Number(unitMatch[1]);
     if (!Number.isFinite(amount)) {
       return null;
     }
 
-    if (unit === 's') {
-      return amount * 1_000;
+    switch (unitMatch[2].toLowerCase()) {
+      case 'tick':
+      case 'ticks':
+        return amount / 10_000;
+      case 'microsecond':
+      case 'microseconds':
+        return amount / 1_000;
+      case 'ms':
+        return amount;
+      case 's':
+        return amount * 1_000;
+      case 'm':
+        return amount * 60_000;
+      case 'h':
+        return amount * 3_600_000;
+      case 'd':
+        return amount * 86_400_000;
+      default:
+        return null;
     }
-
-    if (unit === 'm') {
-      return amount * 60_000;
-    }
-
-    if (unit === 'h') {
-      return amount * 3_600_000;
-    }
-
-    if (unit === 'd') {
-      return amount * 86_400_000;
-    }
-
-    return null;
   }
 
   private coerceDynamicContainer(value: unknown): unknown {
