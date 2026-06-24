@@ -590,12 +590,36 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
       return date ? date.toISOString() : null;
     }
 
-    if (functionName === 'todouble') {
+    if (functionName === 'todouble' || functionName === 'toreal' || functionName === 'todecimal') {
       if (argumentsValues.length !== 1) {
-        throw new Error('todouble() expects exactly one argument.');
+        throw new Error(`${functionName}() expects exactly one argument.`);
       }
 
       return this.evaluateToDoubleFunction(argumentsValues[0]);
+    }
+
+    if (functionName === 'totimespan') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('totimespan() expects exactly one argument.');
+      }
+
+      return this.evaluateToTimespanFunction(argumentsValues[0]);
+    }
+
+    if (functionName === 'toguid') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('toguid() expects exactly one argument.');
+      }
+
+      return this.evaluateToGuidFunction(argumentsValues[0]);
+    }
+
+    if (functionName === 'todynamic') {
+      if (argumentsValues.length !== 1) {
+        throw new Error('todynamic() expects exactly one argument.');
+      }
+
+      return this.evaluateToDynamicFunction(argumentsValues[0]);
     }
 
     if (functionName === 'round') {
@@ -1276,6 +1300,70 @@ export class ExpressionAstEvaluator extends KqlVisitor<KustoScalar> {
 
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private evaluateToTimespanFunction(value: KustoScalar): KustoScalar {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    let candidate: KustoScalar = value;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return null;
+      }
+
+      const literalMatch = trimmed.match(/^timespan\((.*)\)$/is);
+      candidate = literalMatch ? literalMatch[1].trim() : trimmed;
+    }
+
+    const milliseconds = this.toTimespanMilliseconds(candidate);
+    if (milliseconds === null) {
+      return null;
+    }
+
+    return this.formatTimespanMilliseconds(milliseconds);
+  }
+
+  private evaluateToGuidFunction(value: KustoScalar): KustoScalar {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    const text = String(value).trim();
+    if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(text)) {
+      return null;
+    }
+
+    return text.toLowerCase();
+  }
+
+  private evaluateToDynamicFunction(value: KustoScalar): KustoScalar {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (Array.isArray(value) || (typeof value === 'object' && !(value instanceof Date))) {
+      return this.options.normalizeScalar(value);
+    }
+
+    if (typeof value !== 'string') {
+      return this.options.normalizeScalar(value);
+    }
+
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return null;
+    }
+
+    const literalMatch = trimmed.match(/^dynamic\((.*)\)$/is);
+    const payload = literalMatch ? literalMatch[1].trim() : trimmed;
+    try {
+      return this.options.normalizeScalar(JSON.parse(payload));
+    } catch {
+      return this.options.normalizeScalar(value);
+    }
   }
 
   private evaluateRoundFunction(value: KustoScalar, precisionValue?: KustoScalar): KustoScalar {

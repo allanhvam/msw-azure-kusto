@@ -730,7 +730,7 @@ export class KustoInterpreter {
   }
 
   private isValueCompatibleWithType(value: KustoScalar, sourceType: string): boolean {
-    switch (sourceType) {
+    switch (this.normalizeScalarTypeName(sourceType)) {
       case 'datetime':
         if (value instanceof Date) {
           return !Number.isNaN(value.getTime());
@@ -749,7 +749,7 @@ export class KustoInterpreter {
       case 'decimal':
         return typeof value === 'number';
       case 'dynamic':
-        return typeof value === 'object';
+        return true;
       case 'string':
       case 'guid':
       case 'timespan':
@@ -1095,7 +1095,7 @@ export class KustoInterpreter {
   }
 
   private convertIngestValue(tableName: string, column: string, value: unknown): unknown {
-    const type = this.schemaTypes.get(tableName)?.get(column)?.toLowerCase();
+    const type = this.normalizeScalarTypeName(this.schemaTypes.get(tableName)?.get(column)?.toLowerCase() ?? '');
 
     if (value === null || value === undefined) {
       if (type === 'string') {
@@ -2182,7 +2182,7 @@ export class KustoInterpreter {
   }
 
   private mapCslTypeToSystemType(cslType: string): string {
-    const normalized = cslType.trim().toLowerCase();
+    const normalized = this.normalizeScalarTypeName(cslType);
     if (normalized === 'int') {
       return 'System.Int32';
     }
@@ -2214,20 +2214,63 @@ export class KustoInterpreter {
     return 'System.String';
   }
 
-  private parseScalar(text: string): KustoScalar {
-    const intLiteralMatch = text.match(/^int\((.*)\)$/is);
-    if (intLiteralMatch) {
-      const innerValue = this.parseScalar(intLiteralMatch[1].trim());
-      if (innerValue === null) {
-        return null;
+  private normalizeScalarTypeName(typeName: string): string {
+    const normalized = typeName.trim().toLowerCase();
+    if (normalized === 'boolean') {
+      return 'bool';
+    }
+
+    if (normalized === 'date') {
+      return 'datetime';
+    }
+
+    if (normalized === 'double') {
+      return 'real';
+    }
+
+    if (normalized === 'time') {
+      return 'timespan';
+    }
+
+    if (normalized === 'uuid' || normalized === 'uniqueid') {
+      return 'guid';
+    }
+
+    return normalized;
+  }
+
+  private tryParseTypedScalarLiteral(typeName: string, innerText: string): KustoScalar | undefined {
+    const normalizedTypeName = this.normalizeScalarTypeName(typeName);
+    const supportedTypedLiterals = new Set([
+      'bool',
+      'datetime',
+      'decimal',
+      'dynamic',
+      'guid',
+      'int',
+      'long',
+      'real',
+      'string',
+      'timespan',
+    ]);
+    if (!supportedTypedLiterals.has(normalizedTypeName)) {
+      return undefined;
+    }
+
+    const trimmedInnerText = innerText.trim();
+    if (trimmedInnerText.length === 0 || /^null$/i.test(trimmedInnerText)) {
+      return null;
+    }
+
+    const parsedInnerValue = this.parseScalar(trimmedInnerText);
+
+    const toInteger = (value: KustoScalar): number | null => {
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? Math.trunc(value) : null;
       }
 
-      if (typeof innerValue === 'number') {
-        return Number.isFinite(innerValue) ? Math.trunc(innerValue) : null;
-      }
-
-      if (typeof innerValue === 'string') {
-        const trimmed = innerValue.trim();
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
         if (!/^-?\d+$/.test(trimmed)) {
           return null;
         }
@@ -2237,6 +2280,117 @@ export class KustoInterpreter {
       }
 
       return null;
+    };
+
+    const toNumber = (value: KustoScalar): number | null => {
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : null;
+      }
+
+      if (typeof value === 'string') {
+        const parsed = Number(value.trim());
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+
+      return null;
+    };
+
+    const toBoolean = (value: KustoScalar): boolean | null => {
+      if (typeof value === 'boolean') {
+        return value;
+      }
+
+      if (typeof value === 'number') {
+        if (value === 0) {
+          return false;
+        }
+
+        if (value === 1) {
+          return true;
+        }
+
+        return null;
+      }
+
+      if (typeof value === 'string') {
+        const trimmed = value.trim().toLowerCase();
+        if (trimmed === 'true' || trimmed === '1') {
+          return true;
+        }
+
+        if (trimmed === 'false' || trimmed === '0') {
+          return false;
+        }
+      }
+
+      return null;
+    };
+
+    const toGuid = (value: KustoScalar): string | null => {
+      if (typeof value !== 'string') {
+        return null;
+      }
+
+      const trimmed = value.trim();
+      if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(trimmed)) {
+        return null;
+      }
+
+      return trimmed.toLowerCase();
+    };
+
+    if (normalizedTypeName === 'int' || normalizedTypeName === 'long') {
+      return toInteger(parsedInnerValue);
+    }
+
+    if (normalizedTypeName === 'real' || normalizedTypeName === 'decimal') {
+      return toNumber(parsedInnerValue);
+    }
+
+    if (normalizedTypeName === 'bool') {
+      return toBoolean(parsedInnerValue);
+    }
+
+    if (normalizedTypeName === 'datetime') {
+      const datetimeText = typeof parsedInnerValue === 'string' ? parsedInnerValue : String(parsedInnerValue);
+      const parsedDate = this.toDateValue(datetimeText);
+      return parsedDate ? parsedDate.toISOString() : null;
+    }
+
+    if (normalizedTypeName === 'timespan') {
+      const timespanText = typeof parsedInnerValue === 'string' ? parsedInnerValue : String(parsedInnerValue);
+      const timespanMilliseconds = this.toTimespanMilliseconds(timespanText);
+      return timespanMilliseconds === null ? null : timespanText.trim();
+    }
+
+    if (normalizedTypeName === 'guid') {
+      return toGuid(parsedInnerValue);
+    }
+
+    if (normalizedTypeName === 'dynamic') {
+      try {
+        return this.normalizeScalar(JSON.parse(trimmedInnerText));
+      } catch {
+        // Fallback preserves non-JSON dynamic payloads as scalars.
+      }
+
+      return this.normalizeScalar(parsedInnerValue);
+    }
+
+    if (normalizedTypeName === 'string') {
+      return String(parsedInnerValue);
+    }
+
+    return undefined;
+  }
+
+  private parseScalar(text: string): KustoScalar {
+    const typedLiteralMatch = text.match(/^([A-Za-z_]\w*)\((.*)\)$/is);
+    if (typedLiteralMatch) {
+      const typedLiteralValue = this.tryParseTypedScalarLiteral(typedLiteralMatch[1], typedLiteralMatch[2]);
+      if (typedLiteralValue !== undefined) {
+        return typedLiteralValue;
+      }
     }
 
     if (text.length >= 3 && text.startsWith('@"') && text.endsWith('"')) {
@@ -2331,10 +2485,39 @@ export class KustoInterpreter {
       return null;
     }
 
-    const unit = trimmed.slice(-1).toLowerCase();
-    const amount = Number(trimmed.slice(0, -1));
+    const colonMatch = trimmed.match(/^(-)?(?:(\d+)\.)?(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/);
+    if (colonMatch) {
+      const sign = colonMatch[1] ? -1 : 1;
+      const days = colonMatch[2] ? Number(colonMatch[2]) : 0;
+      const hours = Number(colonMatch[3]);
+      const minutes = Number(colonMatch[4]);
+      const seconds = colonMatch[5] ? Number(colonMatch[5]) : 0;
+      const fractionSeconds = colonMatch[6] ? Number(`0.${colonMatch[6]}`) : 0;
+      const totalSeconds = ((days * 24 + hours) * 60 + minutes) * 60 + seconds + fractionSeconds;
+      return sign * totalSeconds * 1_000;
+    }
+
+    const unitMatch = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*(ms|microseconds?|ticks?|s|m|h|d)$/i);
+    if (!unitMatch) {
+      return null;
+    }
+
+    const amount = Number(unitMatch[1]);
     if (!Number.isFinite(amount)) {
       return null;
+    }
+
+    const unit = unitMatch[2].toLowerCase();
+    if (unit === 'tick' || unit === 'ticks') {
+      return amount / 10_000;
+    }
+
+    if (unit === 'microsecond' || unit === 'microseconds') {
+      return amount / 1_000;
+    }
+
+    if (unit === 'ms') {
+      return amount;
     }
 
     if (unit === 's') {
