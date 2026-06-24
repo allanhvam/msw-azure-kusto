@@ -882,6 +882,29 @@ test('interprets mv-expand operator with limit', async () => {
   ]);
 });
 
+test('interprets mv-expand over datatable dynamic array literals', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(`datatable(EventId:int, Tags:dynamic)
+[
+  1, dynamic(["flood", "urgent"]),
+  2, dynamic(["hail"]),
+  3, dynamic(["flood", "coastal"])
+]
+| mv-expand Tag = Tags
+| project EventId, Tag = tostring(Tag)
+| order by EventId asc, Tag asc`);
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [
+    { EventId: 1, Tag: 'flood' },
+    { EventId: 1, Tag: 'urgent' },
+    { EventId: 2, Tag: 'hail' },
+    { EventId: 3, Tag: 'coastal' },
+    { EventId: 3, Tag: 'flood' },
+  ]);
+});
+
 test('interprets scalar range function with mv-expand', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [{ Id: 1 }]);
@@ -1771,5 +1794,90 @@ test('tolong/toint return null for non-integer strings', async () => {
     I3: 42,
     N1: 3,
     N2: -3,
+  }]);
+});
+
+test('inline datatable typed literals support scalar type families', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(`datatable(
+  BoolValue:bool,
+  DateValue:datetime,
+  DecimalValue:decimal,
+  DynamicValue:dynamic,
+  GuidValue:guid,
+  IntValue:int,
+  LongValue:long,
+  RealValue:real,
+  StringValue:string,
+  TimespanValue:timespan
+)[
+  bool(true), datetime(2024-01-02 03:04:05), decimal(12.5), dynamic(1), guid(01234567-89ab-cdef-0123-456789abcdef), int(null), long(42), real(3.5), "hello", timespan(1.5h)
+]
+| project BoolValue, DateValue, DecimalValue, DynamicValue, GuidValue, IntValue, LongValue, RealValue, StringValue, TimespanValue`);
+
+  assert.deepEqual(result.rows, [{
+    BoolValue: true,
+    DateValue: '2024-01-02T03:04:05.000Z',
+    DecimalValue: 12.5,
+    DynamicValue: 1,
+    GuidValue: '01234567-89ab-cdef-0123-456789abcdef',
+    IntValue: null,
+    LongValue: 42,
+    RealValue: 3.5,
+    StringValue: 'hello',
+    TimespanValue: '1.5h',
+  }]);
+});
+
+test('inline datatable rows support missing scalar conversion functions', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(`datatable(
+  GuidText:string,
+  TimespanText:string,
+  DecimalText:string,
+  DynamicText:string
+)[
+  '11111111-2222-3333-4444-555555555555', '2m', '2.25', '{"ok":true}'
+]
+| project
+    GuidValue = toguid(GuidText),
+    TimespanValue = totimespan(TimespanText),
+    DecimalValue = todecimal(DecimalText),
+    RealValue = toreal(DecimalText),
+    DynamicOk = tostring(todynamic(DynamicText).ok)`);
+
+  assert.deepEqual(result.rows, [{
+    GuidValue: '11111111-2222-3333-4444-555555555555',
+    TimespanValue: '00:02:00',
+    DecimalValue: 2.25,
+    RealValue: 2.25,
+    DynamicOk: 'true',
+  }]);
+});
+
+test('scalar conversion functions cover missing datatypes', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(`print
+  RealValue = toreal('12.5'),
+  DecimalValue = todecimal('12.5'),
+  TimespanValue = totimespan('90s'),
+  GuidValue = toguid('01234567-89ab-cdef-0123-456789abcdef'),
+  DynamicInner = tostring(todynamic('{"x":2}').x),
+  DynamicFallback = tostring(todynamic('plain-text')),
+  NullGuid = toguid('not-a-guid'),
+  NullTimespan = totimespan('not-a-timespan')`);
+
+  assert.deepEqual(result.rows, [{
+    RealValue: 12.5,
+    DecimalValue: 12.5,
+    TimespanValue: '00:01:30',
+    GuidValue: '01234567-89ab-cdef-0123-456789abcdef',
+    DynamicInner: '2',
+    DynamicFallback: 'plain-text',
+    NullGuid: null,
+    NullTimespan: null,
   }]);
 });
