@@ -6,8 +6,8 @@ import { seedTable } from './seed-table.js';
 test('mv-apply filters expanded elements within the on subquery', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
-    { Id: 1, Values: [1, 2, 3, 4] as unknown as string },
-    { Id: 2, Values: [5, 6] as unknown as string },
+    { Id: 1, Values: [1, 2, 3, 4] },
+    { Id: 2, Values: [5, 6] },
   ]);
 
   const result = await interpreter.execute(
@@ -25,8 +25,8 @@ test('mv-apply filters expanded elements within the on subquery', async () => {
 test('mv-apply summarizes per source row and re-attaches source columns', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
-    { Id: 1, Values: [3, 1, 2] as unknown as string },
-    { Id: 2, Values: [9, 8] as unknown as string },
+    { Id: 1, Values: [3, 1, 2] },
+    { Id: 2, Values: [9, 8] },
   ]);
 
   const result = await interpreter.execute(
@@ -43,8 +43,8 @@ test('mv-apply summarizes per source row and re-attaches source columns', async 
 test('mv-apply applies top within the subquery per source row', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
-    { Id: 1, Values: [3, 1, 2] as unknown as string },
-    { Id: 2, Values: [9, 8] as unknown as string },
+    { Id: 1, Values: [3, 1, 2] },
+    { Id: 2, Values: [9, 8] },
   ]);
 
   const result = await interpreter.execute(
@@ -61,7 +61,7 @@ test('mv-apply applies top within the subquery per source row', async () => {
 test('mv-apply honors the limit clause on the expansion', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
-    { Id: 1, Values: [10, 20, 30] as unknown as string },
+    { Id: 1, Values: [10, 20, 30] },
   ]);
 
   const result = await interpreter.execute(
