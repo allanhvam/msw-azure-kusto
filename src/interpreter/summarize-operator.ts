@@ -253,6 +253,26 @@ export class SummarizeOperator {
       return orderedValues;
     }
 
+    if (functionName === 'any') {
+      let fallback: KustoScalar = null;
+      let hasFallback = false;
+
+      for (const row of rows) {
+        const value = this.options.normalizeScalar(this.options.evaluateUnnamedExpression(argument, row, executionContext));
+
+        if (!hasFallback && value !== null) {
+          fallback = value;
+          hasFallback = true;
+        }
+
+        if (value !== null && !(typeof value === 'string' && value.length === 0)) {
+          return value;
+        }
+      }
+
+      return hasFallback ? fallback : null;
+    }
+
     if (functionName === 'sum') {
       let sum = 0;
       for (const row of rows) {
