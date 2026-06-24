@@ -620,6 +620,48 @@ test('interprets sort and top operators', async () => {
   assert.deepEqual(sortedDefault.rows.map((row) => row.Id), [2, 3, 1]);
 });
 
+test('sort places nulls first for asc and last for desc', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const asc = await interpreter.execute(`datatable(Id:int, Value:int)
+[
+  1, 10,
+  2, int(null),
+  3, 5
+]
+| sort by Value asc
+| project Id`);
+  assert.equal(asc.kind, 'query');
+  assert.deepEqual(asc.rows.map((row) => row.Id), [2, 3, 1]);
+
+  const desc = await interpreter.execute(`datatable(Id:int, Value:int)
+[
+  1, 10,
+  2, int(null),
+  3, 5
+]
+| sort by Value desc
+| project Id`);
+  assert.equal(desc.kind, 'query');
+  assert.deepEqual(desc.rows.map((row) => row.Id), [1, 3, 2]);
+});
+
+test('sort uses ordinal case-sensitive string ordering', async () => {
+  const interpreter = new KustoInterpreter();
+
+  const result = await interpreter.execute(`datatable(Id:int, Name:string)
+[
+  1, "a",
+  2, "B",
+  3, "A"
+]
+| sort by Name asc
+| project Id`);
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows.map((row) => row.Id), [3, 2, 1]);
+});
+
 test('interprets summarize count by', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
