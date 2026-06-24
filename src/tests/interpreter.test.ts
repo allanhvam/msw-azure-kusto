@@ -724,6 +724,27 @@ test('interprets summarize make_set by', async () => {
   ]);
 });
 
+test('interprets summarize any by', async () => {
+  const interpreter = new KustoInterpreter();
+  await seedTable(interpreter, 'Events', [
+    { Group: 'A', CandidateValue: null },
+    { Group: 'A', CandidateValue: 'Alpha' },
+    { Group: 'A', CandidateValue: 'Beta' },
+    { Group: 'B', CandidateValue: null },
+    { Group: 'B', CandidateValue: 'Gamma' },
+  ]);
+
+  const result = await interpreter.execute(
+    'Events | summarize Chosen = any(CandidateValue) by Group | sort by Group asc',
+  );
+
+  assert.equal(result.kind, 'query');
+  assert.deepEqual(result.rows, [
+    { Group: 'A', Chosen: 'Alpha' },
+    { Group: 'B', Chosen: 'Gamma' },
+  ]);
+});
+
 test('interprets summarize sum avg min max by', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
