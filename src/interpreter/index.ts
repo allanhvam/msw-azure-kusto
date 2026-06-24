@@ -2058,15 +2058,19 @@ export class KustoInterpreter {
     }
 
     if (left === null) {
-      return 1;
+      return -1;
     }
 
     if (right === null) {
-      return -1;
+      return 1;
     }
 
     if (typeof left === 'number' && typeof right === 'number') {
       return left < right ? -1 : 1;
+    }
+
+    if (typeof left === 'boolean' && typeof right === 'boolean') {
+      return left ? 1 : -1;
     }
 
     if (left instanceof Date && right instanceof Date) {
@@ -2079,9 +2083,17 @@ export class KustoInterpreter {
       return leftTime < rightTime ? -1 : 1;
     }
 
+    if (typeof left === 'string' && typeof right === 'string') {
+      return left < right ? -1 : 1;
+    }
+
     const leftText = String(left);
     const rightText = String(right);
-    return leftText.localeCompare(rightText);
+    if (leftText === rightText) {
+      return 0;
+    }
+
+    return leftText < rightText ? -1 : 1;
   }
 
   private applyPartitionAst(
@@ -2203,6 +2215,30 @@ export class KustoInterpreter {
   }
 
   private parseScalar(text: string): KustoScalar {
+    const intLiteralMatch = text.match(/^int\((.*)\)$/is);
+    if (intLiteralMatch) {
+      const innerValue = this.parseScalar(intLiteralMatch[1].trim());
+      if (innerValue === null) {
+        return null;
+      }
+
+      if (typeof innerValue === 'number') {
+        return Number.isFinite(innerValue) ? Math.trunc(innerValue) : null;
+      }
+
+      if (typeof innerValue === 'string') {
+        const trimmed = innerValue.trim();
+        if (!/^-?\d+$/.test(trimmed)) {
+          return null;
+        }
+
+        const parsed = Number(trimmed);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+
+      return null;
+    }
+
     if (text.length >= 3 && text.startsWith('@"') && text.endsWith('"')) {
       return text.slice(2, -1);
     }
