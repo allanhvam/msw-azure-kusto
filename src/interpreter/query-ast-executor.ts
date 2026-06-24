@@ -6,6 +6,7 @@ import type {
   JoinOperatorContext,
   LookupOperatorContext,
   MakeSeriesOperatorContext,
+  MvapplyOperatorContext,
   MvexpandOperatorContext,
   NamedExpressionContext,
   OrderedExpressionContext,
@@ -70,6 +71,12 @@ export type QueryAstExecutionHandlers = {
   applySort: (rows: KustoRow[], expressions: OrderedExpressionContext[]) => KustoRow[];
   applyTop: (rows: KustoRow[], amountExpression: UnnamedExpressionContext, by: OrderedExpressionContext) => KustoRow[];
   applyMvExpand: (rows: KustoRow[], expressions: NamedExpressionContext[], limit: number | null) => KustoRow[];
+  applyMvApply: (
+    rows: KustoRow[],
+    expressions: NamedExpressionContext[],
+    limit: number | null,
+    subExpressionOperators: AfterPipeOperatorContext[],
+  ) => KustoRow[];
   applyMakeSeries: (
     rows: KustoRow[],
     aggregations: Array<{
@@ -261,6 +268,29 @@ class PipeOperatorExecutor extends KqlVisitor<KustoRow[]> {
       this.rows,
       ctx.mvexpandOperatorExpression().map((expression) => expression.namedExpression()),
       limit,
+    );
+  };
+
+  visitMvapplyOperator = (ctx: MvapplyOperatorContext): KustoRow[] => {
+    const limitLiteral = ctx.mvapplyOperatorLimitClause()?.LONGLITERAL().getText() ?? null;
+    const limit = limitLiteral ? Number(limitLiteral) : null;
+    if (limit !== null && (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 0)) {
+      throw new Error(`Invalid mv-apply limit: ${limitLiteral}`);
+    }
+
+    const subExpression = ctx.contextualSubExpression().pipeSubExpression();
+    if (!subExpression) {
+      throw new Error('Only mv-apply on (subquery) form is supported.');
+    }
+
+    return this.handlers.applyMvApply(
+      this.rows,
+      ctx.mvapplyOperatorExpression().map((expression) => expression.namedExpression()),
+      limit,
+      [
+        subExpression.afterPipeOperator(),
+        ...subExpression.pipedOperator().map((piped) => piped.afterPipeOperator()),
+      ],
     );
   };
 

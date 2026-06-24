@@ -106,6 +106,8 @@ export class KustoInterpreter {
       applySort: (rows, expressions) => this.applySortAst(rows, expressions, executionContext),
       applyTop: (rows, amountExpression, by) => this.applyTopAst(rows, amountExpression, by, executionContext),
       applyMvExpand: (rows, expressions, limit) => this.applyMvExpandAst(rows, expressions, limit, executionContext),
+      applyMvApply: (rows, expressions, limit, subExpressionOperators) =>
+        this.applyMvApplyAst(rows, expressions, limit, subExpressionOperators, executionContext),
       applyMakeSeries: (rows, aggregations, on, fromExpression, toExpression, stepExpression, by) =>
         this.applyMakeSeriesAst(rows, aggregations, on, fromExpression, toExpression, stepExpression, by, executionContext),
       applySummarize: (rows, aggregations, by) => this.applySummarizeAst(rows, aggregations, by, executionContext),
@@ -1803,6 +1805,44 @@ export class KustoInterpreter {
     }
 
     return expandedRows;
+  }
+
+  private applyMvApplyAst(
+    rows: KustoRow[],
+    expressions: NamedExpressionContext[],
+    limit: number | null,
+    subExpressionOperators: AfterPipeOperatorContext[],
+    executionContext: ExecutionContext,
+  ): KustoRow[] {
+    if (expressions.length === 0) {
+      return rows;
+    }
+
+    const expandedColumns = new Set(
+      expressions.map((expression) => getAlias(expression) ?? expression.unnamedExpression().getText()),
+    );
+    const handlers = this.buildQueryExecutionHandlers(executionContext);
+
+    const output: KustoRow[] = [];
+    for (const row of rows) {
+      // Expand this source row's array column(s) into a subtable, then run the
+      // on (...) subquery against it.
+      const subtable = this.applyMvExpandAst([{ ...row }], expressions, limit, executionContext);
+      const subResult = applyOperators(subtable, subExpressionOperators, handlers, null);
+
+      // Re-attach the non-expanded source columns to each subquery result row,
+      // restoring any that the subquery dropped (e.g. via summarize).
+      for (const resultRow of subResult) {
+        for (const [columnName, value] of Object.entries(row)) {
+          if (!expandedColumns.has(columnName) && !Object.hasOwn(resultRow, columnName)) {
+            resultRow[columnName] = value;
+          }
+        }
+        output.push(resultRow);
+      }
+    }
+
+    return output;
   }
 
   private applyMakeSeriesAst(
