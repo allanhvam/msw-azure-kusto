@@ -853,8 +853,8 @@ test('interprets summarize default aggregation names', async () => {
 test('interprets mv-expand operator', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
-    { Id: 1, Values: [10, 20] as unknown as string },
-    { Id: 2, Values: [30] as unknown as string },
+    { Id: 1, Values: [10, 20] },
+    { Id: 2, Values: [30] },
   ]);
 
   const result = await interpreter.execute('Events | mv-expand Values | sort by Id asc, Values asc | project Id, Values');
@@ -870,7 +870,7 @@ test('interprets mv-expand operator', async () => {
 test('interprets mv-expand operator with limit', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
-    { Id: 1, Values: [10, 20, 30] as unknown as string },
+    { Id: 1, Values: [10, 20, 30] },
   ]);
 
   const result = await interpreter.execute('Events | mv-expand Values limit 2 | sort by Values asc | project Id, Values');
@@ -1072,7 +1072,7 @@ test('interprets round function', async () => {
 test('interprets array_length function', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
-    { Id: 1, Values: [10, 20, 30] as unknown as string },
+    { Id: 1, Values: [10, 20, 30] },
   ]);
 
   const result = await interpreter.execute('Events | extend Len = array_length(Values) | project Len');
@@ -1618,8 +1618,8 @@ test('interprets trim, extract, and replace_string functions', async () => {
 test('interprets tostring, isempty, isnotempty, isnull, isnotnull, coalesce functions', async () => {
   const interpreter = new KustoInterpreter();
   await seedTable(interpreter, 'Events', [
-    { Id: 1, Value: 42, Name: null as unknown as string },
-    { Id: 2, Value: null as unknown as number, Name: 'hello' },
+    { Id: 1, Value: 42, Name: null },
+    { Id: 2, Value: null, Name: 'hello' },
     { Id: 3, Value: 7, Name: '' },
   ]);
 
